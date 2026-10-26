@@ -1,6 +1,8 @@
 """
-AnimeHeaven Episode Detector & Matrix Generator with Safe Base64 Encoding
-Encodes items in base64 to avoid bash quoting errors when titles have apostrophes or symbols.
+AnimeHeaven Episode Detector & Matrix Generator with Robust Parser
+- Ignores banner ads at the top of new.php (e.g. Sakamoto Days Banner).
+- Uses exact .watch2 episode number matching to eliminate skipping.
+- Transmits metadata via base64 environment variable to prevent bash quoting errors.
 """
 
 import os
@@ -79,17 +81,20 @@ def is_already_uploaded(history: dict, mal_id: Optional[int], anime_title: str, 
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
     content = http_get(f"{ANIMEHEAVEN_BASE}/new.php")
-    pattern = r"<a[^>]+href=['\"](anime\.php\?[^'\"]+)['\"][^>]*>[\s\S]*?<img[^>]+alt=['\"]([^'\"]+)['\"][^>]*>[\s\S]*?<div class=['\"]chartepm[^'\"]*['\"]>(\d+)</div>"
+    
+    # Strictly match actual episode release cards (.chart bc1), avoiding top slideshow banners
+    chart_pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>"""
 
     items = []
     seen = set()
-    for match in re.finditer(pattern, content, re.IGNORECASE):
-        anime_rel_url = match.group(1)
+    for match in re.finditer(chart_pattern, content, re.IGNORECASE):
+        anime_id = match.group(1).strip()
         raw_title = match.group(2)
         ep_num = match.group(3)
 
-        anime_id = anime_rel_url.split("?")[-1]
         title = html.unescape(raw_title).strip()
+        # Clean any trailing "Banner" artifacts if present
+        title = re.sub(r'\s+Banner$', '', title, flags=re.IGNORECASE)
         key = f"{anime_id}_ep{ep_num}"
 
         if key not in seen:
@@ -97,13 +102,42 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
             items.append({
                 "key": key,
                 "anime_id": anime_id,
-                "anime_url": f"{ANIMEHEAVEN_BASE}/{anime_rel_url}",
+                "anime_url": f"{ANIMEHEAVEN_BASE}/anime.php?{anime_id}",
                 "title": title,
                 "episode": int(ep_num)
             })
             if len(items) >= limit:
                 break
     return items
+
+
+def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
+    """Finds the session key for an episode using multiple robust extraction techniques."""
+    html_content = http_get(anime_url)
+    
+    # Technique 1: anchor tags with gate call
+    pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
+    matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
+    for m in matches:
+        k = m.group(1)
+        inner = m.group(2)
+        # Direct class watch2 number match
+        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>(\d+)<', inner)
+        if w2 and int(w2.group(1)) == target_ep:
+            return k
+        # Cleaned text fallback
+        clean = re.sub(r'<[^>]+>', ' ', inner)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        ep_m = re.search(r'Episode\s+(\d+)', clean, re.IGNORECASE)
+        if ep_m and int(ep_m.group(1)) == target_ep:
+            return k
+
+    # Technique 2: Direct gatea regex with ID
+    raw_keys = re.findall(r'gate[ah]\(\s*[\'"]([a-f0-9]{32})[\'"]', html_content)
+    if raw_keys and target_ep == 1 and len(raw_keys) == 1:
+        return raw_keys[0]
+
+    return None
 
 
 def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] = None) -> List[dict]:
@@ -125,14 +159,18 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     seen_eps = set()
     for m in matches:
         k = m.group(1)
-        inner = re.sub(r'<[^>]+>', ' ', m.group(2))
-        inner = re.sub(r'\s+', ' ', inner).strip()
-        ep_match = re.search(r'Episode\s+(\d+)', inner, re.IGNORECASE)
-        ep_num = int(ep_match.group(1)) if ep_match else None
-        if ep_num is None:
-            continue
+        inner = m.group(2)
 
-        if ep_num in seen_eps:
+        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>(\d+)<', inner)
+        ep_num = int(w2.group(1)) if w2 else None
+
+        if ep_num is None:
+            clean = re.sub(r'<[^>]+>', ' ', inner)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            ep_match = re.search(r'Episode\s+(\d+)', clean, re.IGNORECASE)
+            ep_num = int(ep_match.group(1)) if ep_match else None
+
+        if ep_num is None or ep_num in seen_eps:
             continue
         if allowed_eps is not None and ep_num not in allowed_eps:
             continue
@@ -166,20 +204,6 @@ def resolve_direct_download_url(anime_url: str, session_key: str) -> str:
         pass
 
     return f"https://cz.animeheaven.me/video.mp4?{session_key}&d"
-
-
-def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
-    html_content = http_get(anime_url)
-    pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
-    matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
-    for m in matches:
-        k = m.group(1)
-        inner = re.sub(r'<[^>]+>', ' ', m.group(2))
-        inner = re.sub(r'\s+', ' ', inner).strip()
-        ep_match = re.search(r'Episode\s+(\d+)', inner, re.IGNORECASE)
-        if ep_match and int(ep_match.group(1)) == target_ep:
-            return k
-    return None
 
 
 def main():
@@ -237,7 +261,6 @@ def main():
             if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
                 continue
 
-            # Ensure ONLY this exact newly released episode is downloaded
             session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])
             if not session_key:
                 print(f"[!] Could not find session key for exact Episode {item['episode']} in {item['title']}. Skipping.", file=sys.stderr)
