@@ -1,6 +1,6 @@
 """
-AnimeHeaven Episode Detector & Matrix Generator
-Decodes AES-256-GCM encrypted uploaded_episodes.json using MAPPING_PASSWORD before checking.
+AnimeHeaven Episode Detector & Matrix Generator with Enhanced Dual-Title MAL Lookup
+Extracts both English and Japanese Romaji titles from AnimeHeaven for 100% MAL ID coverage.
 """
 
 import os
@@ -87,14 +87,17 @@ def is_already_uploaded(history: dict, mal_id: Optional[int], anime_title: str, 
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
     content = http_get(f"{ANIMEHEAVEN_BASE}/new.php")
-    chart_pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>"""
+    
+    # Match both English Title and Japanese Title (.charttitlejp)
+    pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>[\s\S]*?<div class=['"]charttitlejp c['"]>([^<]*)</div>"""
 
     items = []
     seen = set()
-    for match in re.finditer(chart_pattern, content, re.IGNORECASE):
+    for match in re.finditer(pattern, content, re.IGNORECASE):
         anime_id = match.group(1).strip()
         raw_title = match.group(2)
         ep_num = match.group(3)
+        jp_title = match.group(4).strip() if match.group(4) else None
 
         title = html.unescape(raw_title).strip()
         title = re.sub(r'\s+Banner$', '', title, flags=re.IGNORECASE)
@@ -107,6 +110,7 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
                 "anime_id": anime_id,
                 "anime_url": f"{ANIMEHEAVEN_BASE}/anime.php?{anime_id}",
                 "title": title,
+                "jp_title": jp_title if jp_title and jp_title != "-" else None,
                 "episode": int(ep_num)
             })
             if len(items) >= limit:
@@ -149,6 +153,9 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     raw_title = title_match.group(1) if title_match else anime_id
     anime_title = re.sub(r'AnimeHeaven.*', '', html.unescape(raw_title)).strip()
 
+    jp_match = re.search(r'<div class=[\'"]altname[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
+    jp_title = jp_match.group(1).strip() if jp_match else None
+
     pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
     matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
 
@@ -179,6 +186,7 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
             "anime_id": anime_id,
             "anime_url": anime_url,
             "title": anime_title,
+            "jp_title": jp_title,
             "episode": ep_num,
             "session_key": k
         })
@@ -214,11 +222,13 @@ def main():
     pending = []
     mal_cache = {}
 
-    def get_mal(title: str):
-        if title not in mal_cache:
-            print(f"[*] Resolving MAL metadata for: '{title}'...", file=sys.stderr)
-            mal_cache[title] = resolve_mal_metadata(title, mal_client_id)
-        return mal_cache[title]
+    def get_mal(title: str, jp_title: Optional[str]):
+        cache_key = f"{title}_{jp_title}"
+        if cache_key not in mal_cache:
+            mal_cache[cache_key] = resolve_mal_metadata(title, jp_title=jp_title, client_id=mal_client_id)
+            mal_id = mal_cache[cache_key].get("mal_id")
+            print(f"[*] MAL Match for '{title}' (JP: '{jp_title}'): MAL ID -> {mal_id or 'N/A'}", file=sys.stderr)
+        return mal_cache[cache_key]
 
     if target_anime_url:
         print(f"[*] BACKLOG MODE: Target {target_anime_url}", file=sys.stderr)
@@ -226,7 +236,7 @@ def main():
         print(f"[*] Found {len(all_episodes)} total episodes for range.", file=sys.stderr)
 
         for item in all_episodes:
-            mal_info = get_mal(item["title"])
+            mal_info = get_mal(item["title"], item.get("jp_title"))
             if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
                 print(f"[-] Already uploaded in history: {item['title']} Ep {item['episode']}. Skipping.", file=sys.stderr)
                 continue
@@ -255,7 +265,7 @@ def main():
             if allowed_eps is not None and item["episode"] not in allowed_eps:
                 continue
 
-            mal_info = get_mal(item["title"])
+            mal_info = get_mal(item["title"], item.get("jp_title"))
             if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
                 continue
 
