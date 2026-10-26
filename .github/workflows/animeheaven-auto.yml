@@ -1,4 +1,4 @@
-name: AnimeHeaven Ingestion & Abyss Upload (MAL Indexed)
+name: AnimeHeaven Ingestion & Abyss Upload (MAL Indexed + Encrypted)
 
 on:
   schedule:
@@ -37,12 +37,16 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install cryptography
+        run: pip install cryptography
+
       - name: Detect episodes
         id: detect_step
         env:
           TARGET_ANIME_URL: ${{ inputs.target_anime_url }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
         run: |
           python detect_episodes.py
 
@@ -80,7 +84,7 @@ jobs:
           retention-days: 1
 
   sync:
-    name: Sync MAL Tree History & Commit
+    name: Sync MAL Tree & Encrypt History
     needs: upload
     if: always()
     runs-on: ubuntu-latest
@@ -101,13 +105,18 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install cryptography
+        run: pip install cryptography
+
       - name: Sync history
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
         run: |
           python sync_history.py downloaded_artifacts
 
-      - name: Commit & Push History
+      - name: Commit & Push Encrypted History
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add uploaded_episodes.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Synced MAL indexed uploaded episodes" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Synced & Encrypted uploaded episodes history" && git push)

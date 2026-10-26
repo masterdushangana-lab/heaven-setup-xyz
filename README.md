@@ -1,49 +1,34 @@
-# AnimeHeaven to Abyss.to Ingestion Pipeline (MAL-Indexed)
+# AnimeHeaven to Abyss.to Ingestion Pipeline (MAL-Indexed & Encrypted)
 
-AnimeHeaven (`animeheaven.me`) වෙතින් episodes direct stream කර **100% Original Resolution** එකෙන්ම **Abyss.to** වෙත upload කර, **MyAnimeList (MAL) ID** පදනම් කරගත් Tree Structure JSON එකකට Embed Links auto-map කරන ස්වයංක්‍රීය පද්ධතියකි.
+AnimeHeaven (`animeheaven.me`) වෙතින් episodes direct stream කර **100% Original Resolution** එකෙන්ම **Abyss.to** වෙත upload කර, **AES-256-GCM Password Encryption මඟින් lock කර** Cloudflare Pages UI එකක් හරහා පමණක් password දී decrypt කරගත හැකි අංගසම්පූර්ණ පද්ධතියකි.
 
-## Tree Mapping Structure (`uploaded_episodes.json`)
+---
 
-```json
-{
-  "5114": {
-    "mal_id": 5114,
-    "title": "Fullmetal Alchemist: Brotherhood",
-    "title_english": "Fullmetal Alchemist: Brotherhood",
-    "title_japanese": "鋼の錬金術師 FULLMETAL ALCHEMIST",
-    "media_type": "TV",
-    "animeheaven_id": "32q3t",
-    "animeheaven_url": "https://animeheaven.me/anime.php?32q3t",
-    "episodes": {
-      "1": {
-        "slug": "abc123xyz",
-        "embed_url": "https://abyss.to/abc123xyz",
-        "filename": "Fullmetal_Alchemist_EP01.mp4",
-        "size_mb": 263.08,
-        "uploaded_at": 1729938000
-      },
-      "2": {
-        "slug": "def456uvw",
-        "embed_url": "https://abyss.to/def456uvw",
-        "filename": "Fullmetal_Alchemist_EP02.mp4",
-        "size_mb": 255.40,
-        "uploaded_at": 1729938100
-      }
-    }
-  }
-}
-```
+## 🔒 Security Architecture (AES-256-GCM Locked)
+- **Zero Plaintext in Git:** `uploaded_episodes.json` ගොනුව GitHub repo එකේ save වන්නේ **AES-256-GCM (PBKDF2-SHA256, 600,000 iterations)** මඟින් සම්පූර්ණයෙන්ම encrypt වී lock වීමෙන් පසුවයි.
+- **Client-Side Decryption:** Password එක කිසිවිටෙකත් server එකට නොයයි. Web Crypto API (`SubtleCrypto`) මඟින් Browser එක තුළදීම decrypt වේ.
+- **Multi-Level Deduplication:** Workflow එක run වන විටත් `MAPPING_PASSWORD` එකෙන් history කියවාගෙන duplicate නොවී ආරක්ෂා කරයි.
 
-## Features
-- **Official MAL ID Mapping:** AnimeHeaven title එකෙන් official MyAnimeList ID එක, English title, Japanese title auto-resolve කර ගනී.
-- **Episode Range Filtering:** `1-12`, `13-24`, `1-5,10-15` ආදී ලෙස කැමති ranges upload කරගත හැක.
-- **Max 18 Parallel Runners:** එකවර episodes 18ක් දක්වා parallel upload වේ.
-- **100% Original Resolution:** කිසිදු re-encode හෝ downscale වීමක් නැත.
+---
 
-## Setup Instructions
+## 🌐 Cloudflare Portal Setup (පියවරෙන් පියවර)
 
-1. මෙම folder/zip එක GitHub repository එකකට push කරන්න.
-2. Repo Settings -> **Secrets and variables** -> **Actions** වෙත ගොස් Secrets එක් කරන්න:
-   - **`ABYSS_API_KEY`** (අනිවාර්යයි): ඔබගේ Abyss.to API Key එක.
-   - **`MAL_CLIENT_ID`** (විකල්පයි / නිර්දේශිතයි): Official MyAnimeList Client ID එක (නොමැති නම් Jikan fallback API auto භාවිතා වේ).
-3. Repo Settings -> **Actions** -> **General** -> **Workflow permissions** යටතේ **Read and write permissions** enable කරන්න.
+1. [Cloudflare Dashboard](https://dash.cloudflare.com/) එකට log වන්න.
+2. **Workers & Pages** -> **Create application** -> **Pages** -> **Connect to Git** ක්ලික් කරන්න.
+3. ඔබගේ ഈ repository එක තෝරාගන්න.
+4. Build Settings:
+   - **Framework preset:** `None`
+   - **Build output directory:** `cloudflare_ui`
+5. Environment Variables:
+   - **`GITHUB_REPO`**: `ඔබගේ-username/ඔබගේ-repo-name` (උදා: `john/heaven-setup-xyz`)
+   - **`GITHUB_TOKEN`** (Private repo එකක් නම් පමණි): GitHub Personal Access Token (PAT).
+6. **Save and Deploy** ක්ලික් කරන්න.
+7. ලැබෙන Cloudflare link එකට ගොස් ඔබේ `MAPPING_PASSWORD` එක ලබා දී Dashboard එක unlock කරගන්න!
+
+---
+
+## ⚙️ GitHub Secrets Required
+Repo **Settings** -> **Secrets and variables** -> **Actions**:
+1. **`ABYSS_API_KEY`** (අනිවාර්යයි): Abyss.to API Key එක.
+2. **`MAPPING_PASSWORD`** (අනිවාර්යයි): JSON ගොනුව Encrypt/Decrypt කිරීමට ඔබ තබන Master Password එක.
+3. **`MAL_CLIENT_ID`** (විකල්පයි): Official MyAnimeList Client ID (නොමැති නම් AniMap auto භාවිතා වේ).

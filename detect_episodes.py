@@ -1,8 +1,6 @@
 """
-AnimeHeaven Episode Detector & Matrix Generator with Robust Parser
-- Ignores banner ads at the top of new.php (e.g. Sakamoto Days Banner).
-- Uses exact .watch2 episode number matching to eliminate skipping.
-- Transmits metadata via base64 environment variable to prevent bash quoting errors.
+AnimeHeaven Episode Detector & Matrix Generator
+Decodes AES-256-GCM encrypted uploaded_episodes.json using MAPPING_PASSWORD before checking.
 """
 
 import os
@@ -15,6 +13,7 @@ import urllib.request
 from typing import Dict, List, Optional, Set
 
 from mal_resolver import resolve_mal_metadata
+from mapping_crypto import decrypt_mapping
 
 ANIMEHEAVEN_BASE = "https://animeheaven.me"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -54,12 +53,19 @@ def http_get(url: str, referer: str = ANIMEHEAVEN_BASE, cookie: str = "") -> str
         return resp.read().decode("utf-8", errors="ignore")
 
 
-def load_history() -> Dict[str, dict]:
+def load_history(password: str) -> Dict[str, dict]:
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+                content = json.load(f)
+            if isinstance(content, dict) and content.get("algorithm") == "AES-256-GCM":
+                if not password:
+                    raise RuntimeError("MAPPING_PASSWORD required to decrypt encrypted history.")
+                return decrypt_mapping(content, password)
+            elif isinstance(content, dict):
+                return content
+        except Exception as e:
+            print(f"[!] Warning reading encrypted history: {e}. Starting fresh.", file=sys.stderr)
             return {}
     return {}
 
@@ -81,8 +87,6 @@ def is_already_uploaded(history: dict, mal_id: Optional[int], anime_title: str, 
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
     content = http_get(f"{ANIMEHEAVEN_BASE}/new.php")
-    
-    # Strictly match actual episode release cards (.chart bc1), avoiding top slideshow banners
     chart_pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>"""
 
     items = []
@@ -93,7 +97,6 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
         ep_num = match.group(3)
 
         title = html.unescape(raw_title).strip()
-        # Clean any trailing "Banner" artifacts if present
         title = re.sub(r'\s+Banner$', '', title, flags=re.IGNORECASE)
         key = f"{anime_id}_ep{ep_num}"
 
@@ -112,27 +115,21 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
 
 
 def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
-    """Finds the session key for an episode using multiple robust extraction techniques."""
     html_content = http_get(anime_url)
-    
-    # Technique 1: anchor tags with gate call
     pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
     matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
     for m in matches:
         k = m.group(1)
         inner = m.group(2)
-        # Direct class watch2 number match
         w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>(\d+)<', inner)
         if w2 and int(w2.group(1)) == target_ep:
             return k
-        # Cleaned text fallback
         clean = re.sub(r'<[^>]+>', ' ', inner)
         clean = re.sub(r'\s+', ' ', clean).strip()
         ep_m = re.search(r'Episode\s+(\d+)', clean, re.IGNORECASE)
         if ep_m and int(ep_m.group(1)) == target_ep:
             return k
 
-    # Technique 2: Direct gatea regex with ID
     raw_keys = re.findall(r'gate[ah]\(\s*[\'"]([a-f0-9]{32})[\'"]', html_content)
     if raw_keys and target_ep == 1 and len(raw_keys) == 1:
         return raw_keys[0]
@@ -210,9 +207,10 @@ def main():
     target_anime_url = os.getenv("TARGET_ANIME_URL", "").strip()
     episode_range_str = os.getenv("EPISODE_RANGE", "").strip()
     mal_client_id = os.getenv("MAL_CLIENT_ID", "").strip()
+    mapping_password = os.getenv("MAPPING_PASSWORD", "").strip()
     allowed_eps = parse_episode_range(episode_range_str)
 
-    history = load_history()
+    history = load_history(mapping_password)
     pending = []
     mal_cache = {}
 
