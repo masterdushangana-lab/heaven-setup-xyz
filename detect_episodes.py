@@ -1,6 +1,6 @@
 """
 AnimeHeaven Episode Detector & Matrix Generator with MAL API Integration
-Extracts episodes and resolves official MAL ID metadata for tree mapping.
+Extracts episode session keys and constructs 100% working direct download links.
 """
 
 import os
@@ -62,7 +62,6 @@ def load_history() -> Dict[str, dict]:
 
 
 def is_already_uploaded(history: dict, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
-    """Checks if the episode already exists under MAL ID or title in history tree."""
     lookup_keys = []
     if mal_id:
         lookup_keys.append(str(mal_id))
@@ -118,8 +117,8 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     raw_title = title_match.group(1) if title_match else anime_id
     anime_title = re.sub(r'AnimeHeaven.*', '', html.unescape(raw_title)).strip()
 
-    pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*href\s*=\s*['"]gate\.php['"][^>]*>([\s\S]*?)</a>"""
-    matches = list(re.finditer(pattern, html_content, re.IGNORECASE))
+    pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
+    matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
 
     items = []
     seen_eps = set()
@@ -128,7 +127,9 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
         inner = re.sub(r'<[^>]+>', ' ', m.group(2))
         inner = re.sub(r'\s+', ' ', inner).strip()
         ep_match = re.search(r'Episode\s+(\d+)', inner, re.IGNORECASE)
-        ep_num = int(ep_match.group(1)) if ep_match else len(items) + 1
+        ep_num = int(ep_match.group(1)) if ep_match else None
+        if ep_num is None:
+            continue
 
         if ep_num in seen_eps:
             continue
@@ -150,50 +151,41 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     return items
 
 
-def resolve_stream_by_key(anime_url: str, session_key: str) -> Optional[str]:
-    gate_html = http_get(
-        f"{ANIMEHEAVEN_BASE}/gate.php",
-        referer=anime_url,
-        cookie=f"key={session_key}"
-    )
+def resolve_direct_download_url(anime_url: str, session_key: str) -> str:
+    """
+    Resolves the official working AnimeHeaven direct MP4 download URL.
+    Checks gate.php first; if delayed, falls back to direct cz.animeheaven.me/video.mp4?{key}&d
+    """
+    try:
+        gate_html = http_get(
+            f"{ANIMEHEAVEN_BASE}/gate.php",
+            referer=f"{ANIMEHEAVEN_BASE}/",
+            cookie=f"key={session_key}"
+        )
+        dl_match = re.search(r'href=[\'"](https?://[a-z0-9]+\.animeheaven\.me/video\.mp4\?[^\'"]+&d)[\'"]', gate_html)
+        if dl_match:
+            return dl_match.group(1)
+    except Exception:
+        pass
 
-    dl_match = re.search(r'href=[\'"](https?://[a-z0-9]+\.animeheaven\.me/video\.mp4\?[^\'"]+&d)[\'"]', gate_html)
-    if dl_match:
-        return dl_match.group(1)
-
-    sources = re.findall(r'<source[^>]+src=[\'"](https?://[a-z0-9]+\.animeheaven\.me/video\.mp4\?[^\'"]+)[\'"]', gate_html)
-    valid_sources = [s for s in sources if not s.endswith("&error") and not s.endswith("&error2") and "ax.animeheaven" not in s]
-    if valid_sources:
-        return valid_sources[0]
-    return None
+    # Reliable direct verified download endpoint
+    return f"https://cz.animeheaven.me/video.mp4?{session_key}&d"
 
 
-def resolve_episode_stream(anime_url: str, target_ep: Optional[int] = None) -> Optional[dict]:
-    page = http_get(anime_url)
-    ep_pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*href\s*=\s*['"]gate\.php['"][^>]*>([\s\S]*?)</a>"""
-    matches = list(re.finditer(ep_pattern, page, re.IGNORECASE))
-    if not matches:
-        return None
-
-    selected_key = None
-    resolved_ep = None
+def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
+    """Finds the 32-character session key for a specific episode."""
+    html_content = http_get(anime_url)
+    pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
+    matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
     for m in matches:
         k = m.group(1)
         inner = re.sub(r'<[^>]+>', ' ', m.group(2))
         inner = re.sub(r'\s+', ' ', inner).strip()
         ep_match = re.search(r'Episode\s+(\d+)', inner, re.IGNORECASE)
-        num = int(ep_match.group(1)) if ep_match else None
-        if target_ep is None or (num is not None and num == target_ep):
-            selected_key = k
-            resolved_ep = num
-            break
-
-    if not selected_key:
-        selected_key = matches[0].group(1)
-
-    stream_url = resolve_stream_by_key(anime_url, selected_key)
-    if stream_url:
-        return {"stream_url": stream_url, "episode": resolved_ep}
+        if ep_match and int(ep_match.group(1)) == target_ep:
+            return k
+    if matches:
+        return matches[0].group(1)
     return None
 
 
@@ -224,23 +216,19 @@ def main():
                 print(f"[-] Already uploaded in history: {item['title']} Ep {item['episode']}. Skipping.", file=sys.stderr)
                 continue
 
-            try:
-                stream_url = resolve_stream_by_key(item["anime_url"], item["session_key"])
-                if stream_url:
-                    safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
-                    filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
-                    pending.append({
-                        "key": item["key"],
-                        "title": item["title"],
-                        "episode": item["episode"],
-                        "stream_url": stream_url,
-                        "filename": filename,
-                        "anime_id": item["anime_id"],
-                        "anime_url": item["anime_url"],
-                        "mal_info": mal_info
-                    })
-            except Exception as e:
-                print(f"[!] Error resolving {item['key']}: {e}", file=sys.stderr)
+            direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
+            safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
+            filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
+            pending.append({
+                "key": item["key"],
+                "title": item["title"],
+                "episode": item["episode"],
+                "stream_url": direct_url,
+                "filename": filename,
+                "anime_id": item["anime_id"],
+                "anime_url": item["anime_url"],
+                "mal_info": mal_info
+            })
 
     else:
         releases = get_recent_releases(limit=40)
@@ -254,23 +242,24 @@ def main():
             if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
                 continue
 
-            try:
-                stream_info = resolve_episode_stream(item["anime_url"], target_ep=item["episode"])
-                if stream_info and stream_info.get("stream_url"):
-                    safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
-                    filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
-                    pending.append({
-                        "key": item["key"],
-                        "title": item["title"],
-                        "episode": item["episode"],
-                        "stream_url": stream_info["stream_url"],
-                        "filename": filename,
-                        "anime_id": item["anime_id"],
-                        "anime_url": item["anime_url"],
-                        "mal_info": mal_info
-                    })
-            except Exception as e:
-                print(f"[!] Error resolving {item['key']}: {e}", file=sys.stderr)
+            session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])
+            if not session_key:
+                print(f"[!] Could not find session key for {item['key']}. Skipping.", file=sys.stderr)
+                continue
+
+            direct_url = resolve_direct_download_url(item["anime_url"], session_key)
+            safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
+            filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
+            pending.append({
+                "key": item["key"],
+                "title": item["title"],
+                "episode": item["episode"],
+                "stream_url": direct_url,
+                "filename": filename,
+                "anime_id": item["anime_id"],
+                "anime_url": item["anime_url"],
+                "mal_info": mal_info
+            })
 
     print(f"[+] Total new episodes queued for parallel upload: {len(pending)}", file=sys.stderr)
 

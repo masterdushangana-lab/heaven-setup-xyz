@@ -1,6 +1,6 @@
 """
 Single Episode Direct Uploader to Abyss.to
-Uploads original source stream directly without downscaling, then outputs result JSON with MAL metadata.
+Downloads using verified AnimeHeaven Referer and uploads directly to Abyss without re-encoding.
 """
 
 import os
@@ -10,24 +10,23 @@ import json
 import subprocess
 import urllib.parse
 
-ANIMEHEAVEN_BASE = "https://animeheaven.me"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
 def upload_to_abyss(direct_url: str, output_name: str, abyss_api_key: str) -> dict:
-    print(f"[*] Starting direct upload for: {output_name}")
+    print(f"[*] Starting download & upload for: {output_name}")
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
 
     temp_file = f"temp_{safe_name}"
     try:
-        # Step 1: Direct Download stream from source
-        print(f"[*] Downloading source stream: {direct_url[:60]}...")
+        # Step 1: Direct Download stream with proper Referer
+        print(f"[*] Downloading source stream: {direct_url}")
         cmd_dl = [
             "curl", "-sSL",
             "-H", f"User-Agent: {USER_AGENT}",
-            "-H", f"Referer: {ANIMEHEAVEN_BASE}/gate.php",
+            "-H", "Referer: https://animeheaven.me/",
             "--tcp-nodelay",
             "--connect-timeout", "30",
             "-o", temp_file,
@@ -35,7 +34,7 @@ def upload_to_abyss(direct_url: str, output_name: str, abyss_api_key: str) -> di
         ]
         res = subprocess.run(cmd_dl)
         if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 1000000:
-            raise RuntimeError(f"Download failed or incomplete (exit code {res.returncode})")
+            raise RuntimeError(f"Download failed or incomplete file size (exit code {res.returncode})")
 
         file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
         print(f"[+] Download complete: {file_size_mb:.2f} MB. Preserving original resolution.")
