@@ -1,0 +1,38 @@
+name: Abyss Direct Video Deletion Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: 'Abyss File ID (Slug) to permanently delete'
+        required: true
+        type: string
+
+jobs:
+  delete_abyss:
+    name: Delete Video on Abyss.to
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send DELETE request to Abyss.to API via curl
+        env:
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          FILE_ID: ${{ inputs.file_id }}
+        run: |
+          echo "[*] Deleting file from Abyss: $FILE_ID"
+          HTTP_STATUS=$(curl -s -o resp.txt -w "%{http_code}" -X DELETE "https://api.abyss.to/v1/files/$FILE_ID" \
+            -H "Authorization: Bearer $ABYSS_API_KEY" \
+            -H "User-Agent: curl/8.5.0" \
+            -H "Accept: application/json")
+          
+          echo "Abyss Response (HTTP $HTTP_STATUS):"
+          cat resp.txt
+          echo ""
+
+          if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+            echo "[SUCCESS] File $FILE_ID successfully deleted from Abyss.to!"
+          elif [ "$HTTP_STATUS" -eq 404 ]; then
+            echo "[INFO] File $FILE_ID does not exist on Abyss (already deleted)."
+          else
+            echo "[ERROR] Abyss deletion failed with HTTP status $HTTP_STATUS"
+            exit 1
+          fi
