@@ -1,6 +1,6 @@
 """
-AnimeHeaven Episode Detector & Matrix Generator with MAL API Integration
-Extracts episode session keys and constructs 100% working direct download links.
+AnimeHeaven Episode Detector & Matrix Generator with Safe Base64 Encoding
+Encodes items in base64 to avoid bash quoting errors when titles have apostrophes or symbols.
 """
 
 import os
@@ -8,6 +8,7 @@ import re
 import sys
 import json
 import html
+import base64
 import urllib.request
 from typing import Dict, List, Optional, Set
 
@@ -152,10 +153,6 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
 
 
 def resolve_direct_download_url(anime_url: str, session_key: str) -> str:
-    """
-    Resolves the official working AnimeHeaven direct MP4 download URL.
-    Checks gate.php first; if delayed, falls back to direct cz.animeheaven.me/video.mp4?{key}&d
-    """
     try:
         gate_html = http_get(
             f"{ANIMEHEAVEN_BASE}/gate.php",
@@ -168,12 +165,10 @@ def resolve_direct_download_url(anime_url: str, session_key: str) -> str:
     except Exception:
         pass
 
-    # Reliable direct verified download endpoint
     return f"https://cz.animeheaven.me/video.mp4?{session_key}&d"
 
 
 def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
-    """Finds the 32-character session key for a specific episode."""
     html_content = http_get(anime_url)
     pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
     matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
@@ -184,8 +179,6 @@ def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[s
         ep_match = re.search(r'Episode\s+(\d+)', inner, re.IGNORECASE)
         if ep_match and int(ep_match.group(1)) == target_ep:
             return k
-    if matches:
-        return matches[0].group(1)
     return None
 
 
@@ -219,7 +212,7 @@ def main():
             direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
             filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
-            pending.append({
+            item_payload = {
                 "key": item["key"],
                 "title": item["title"],
                 "episode": item["episode"],
@@ -228,7 +221,9 @@ def main():
                 "anime_id": item["anime_id"],
                 "anime_url": item["anime_url"],
                 "mal_info": mal_info
-            })
+            }
+            item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
+            pending.append(item_payload)
 
     else:
         releases = get_recent_releases(limit=40)
@@ -242,15 +237,16 @@ def main():
             if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
                 continue
 
+            # Ensure ONLY this exact newly released episode is downloaded
             session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])
             if not session_key:
-                print(f"[!] Could not find session key for {item['key']}. Skipping.", file=sys.stderr)
+                print(f"[!] Could not find session key for exact Episode {item['episode']} in {item['title']}. Skipping.", file=sys.stderr)
                 continue
 
             direct_url = resolve_direct_download_url(item["anime_url"], session_key)
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
             filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
-            pending.append({
+            item_payload = {
                 "key": item["key"],
                 "title": item["title"],
                 "episode": item["episode"],
@@ -259,7 +255,9 @@ def main():
                 "anime_id": item["anime_id"],
                 "anime_url": item["anime_url"],
                 "mal_info": mal_info
-            })
+            }
+            item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
+            pending.append(item_payload)
 
     print(f"[+] Total new episodes queued for parallel upload: {len(pending)}", file=sys.stderr)
 

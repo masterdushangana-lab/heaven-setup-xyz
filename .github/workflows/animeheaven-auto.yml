@@ -65,11 +65,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Upload Episode (${{ matrix.item.title }} - Ep ${{ matrix.item.episode }})
+      - name: Upload Episode
         env:
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          ITEM_META_B64: ${{ matrix.item.meta_b64 }}
         run: |
-          python upload_single.py "${{ matrix.item.stream_url }}" "${{ matrix.item.filename }}" '${{ toJson(matrix.item) }}'
+          python upload_single.py
 
       - name: Save Result Artifact
         uses: actions/upload-artifact@v4

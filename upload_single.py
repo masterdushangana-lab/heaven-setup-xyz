@@ -1,12 +1,13 @@
 """
 Single Episode Direct Uploader to Abyss.to
-Downloads using verified AnimeHeaven Referer and uploads directly to Abyss without re-encoding.
+Reads inputs safely from ITEM_META_B64 environment variable to prevent bash quoting errors.
 """
 
 import os
 import re
 import sys
 import json
+import base64
 import subprocess
 import urllib.parse
 
@@ -78,26 +79,26 @@ def upload_to_abyss(direct_url: str, output_name: str, abyss_api_key: str) -> di
 
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python upload_single.py <direct_url> <output_name> [<metadata_json>]")
-        sys.exit(1)
-
-    direct_url = sys.argv[1]
-    output_name = sys.argv[2]
-    meta_json_str = sys.argv[3] if len(sys.argv) > 3 else "{}"
     abyss_api_key = os.getenv("ABYSS_API_KEY")
-
     if not abyss_api_key:
         print("ERROR: ABYSS_API_KEY environment variable is required.")
         sys.exit(1)
 
-    result = upload_to_abyss(direct_url, output_name, abyss_api_key)
+    meta_b64 = os.getenv("ITEM_META_B64", "").strip()
+    if meta_b64:
+        item_data = json.loads(base64.b64decode(meta_b64).decode("utf-8"))
+        direct_url = item_data["stream_url"]
+        output_name = item_data["filename"]
+    elif len(sys.argv) >= 3:
+        direct_url = sys.argv[1]
+        output_name = sys.argv[2]
+        item_data = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
+    else:
+        print("ERROR: No input provided.")
+        sys.exit(1)
 
-    try:
-        item_meta = json.loads(meta_json_str)
-        result.update(item_meta)
-    except Exception:
-        pass
+    result = upload_to_abyss(direct_url, output_name, abyss_api_key)
+    result.update(item_data)
 
     out_dir = "artifacts"
     os.makedirs(out_dir, exist_ok=True)
