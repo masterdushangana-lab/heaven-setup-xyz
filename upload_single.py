@@ -1,6 +1,7 @@
 """
 Single Episode Direct Uploader to Abyss.to
-Reads inputs safely from ITEM_META_B64 environment variable to prevent bash quoting errors.
+Downloads using verified AnimeHeaven Referer and uploads directly to Abyss without re-encoding.
+Compatible with standard Linux curl (ubuntu-latest).
 """
 
 import os
@@ -47,7 +48,6 @@ def upload_to_abyss(direct_url: str, output_name: str, abyss_api_key: str) -> di
             "-H", "Expect:",
             "--http1.1",
             "--tcp-nodelay",
-            "--buffer-size", "131072",
             "--connect-timeout", "30",
             "-F", f"file=@{temp_file};filename={safe_name}",
             upload_endpoint
