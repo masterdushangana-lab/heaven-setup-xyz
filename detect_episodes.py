@@ -1,6 +1,8 @@
 """
-AnimeHeaven Episode Detector & Matrix Generator with Enhanced Dual-Title MAL Lookup
-Extracts both English and Japanese Romaji titles from AnimeHeaven for 100% MAL ID coverage.
+AnimeHeaven Episode Detector & Matrix Generator
+Features:
+- Mandatory MAL ID support for manual backlog uploads.
+- Bulletproof 3-way deduplication (AnimeID, MAL ID, Title) to eliminate redundant re-uploads.
 """
 
 import os
@@ -70,25 +72,44 @@ def load_history(password: str) -> Dict[str, dict]:
     return {}
 
 
-def is_already_uploaded(history: dict, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
-    lookup_keys = []
-    if mal_id:
-        lookup_keys.append(str(mal_id))
-    lookup_keys.append(anime_title)
+def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
+    """
+    Bulletproof 3-way check:
+    1. Checks if anime_id matches anywhere inside history items.
+    2. Checks MAL ID if available.
+    3. Checks primary title key.
+    """
+    ep_str = str(episode_num)
 
-    for k in lookup_keys:
-        if k in history:
-            anime_entry = history[k]
-            ep_dict = anime_entry.get("episodes", {})
-            if str(episode_num) in ep_dict:
-                return True
+    # Check 1: By MAL ID key
+    if mal_id and str(mal_id) in history:
+        if ep_str in history[str(mal_id)].get("episodes", {}):
+            return True
+
+    # Check 2: By Title key
+    if anime_title in history:
+        if ep_str in history[anime_title].get("episodes", {}):
+            return True
+
+    # Check 3: Deep check across all entries by animeheaven_id or anime_url
+    for entry_key, entry_val in history.items():
+        saved_aid = entry_val.get("animeheaven_id")
+        saved_mal = entry_val.get("mal_id")
+        
+        match = False
+        if saved_aid and saved_aid == anime_id:
+            match = True
+        elif mal_id and saved_mal and int(saved_mal) == int(mal_id):
+            match = True
+
+        if match and ep_str in entry_val.get("episodes", {}):
+            return True
+
     return False
 
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
     content = http_get(f"{ANIMEHEAVEN_BASE}/new.php")
-    
-    # Match both English Title and Japanese Title (.charttitlejp)
     pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>[\s\S]*?<div class=['"]charttitlejp c['"]>([^<]*)</div>"""
 
     items = []
@@ -213,6 +234,7 @@ def resolve_direct_download_url(anime_url: str, session_key: str) -> str:
 
 def main():
     target_anime_url = os.getenv("TARGET_ANIME_URL", "").strip()
+    target_mal_id = os.getenv("TARGET_MAL_ID", "").strip()
     episode_range_str = os.getenv("EPISODE_RANGE", "").strip()
     mal_client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     mapping_password = os.getenv("MAPPING_PASSWORD", "").strip()
@@ -225,20 +247,33 @@ def main():
     def get_mal(title: str, jp_title: Optional[str]):
         cache_key = f"{title}_{jp_title}"
         if cache_key not in mal_cache:
-            mal_cache[cache_key] = resolve_mal_metadata(title, jp_title=jp_title, client_id=mal_client_id)
+            # If target_mal_id is provided explicitly by user, prioritize it
+            if target_mal_id and target_mal_id.isdigit():
+                mal_cache[cache_key] = {
+                    "mal_id": int(target_mal_id),
+                    "title": title,
+                    "title_english": title,
+                    "title_japanese": jp_title,
+                    "media_type": "TV",
+                    "total_episodes": None
+                }
+            else:
+                mal_cache[cache_key] = resolve_mal_metadata(title, jp_title=jp_title, client_id=mal_client_id)
             mal_id = mal_cache[cache_key].get("mal_id")
-            print(f"[*] MAL Match for '{title}' (JP: '{jp_title}'): MAL ID -> {mal_id or 'N/A'}", file=sys.stderr)
+            print(f"[*] MAL Match for '{title}': MAL ID -> {mal_id or 'N/A'}", file=sys.stderr)
         return mal_cache[cache_key]
 
     if target_anime_url:
-        print(f"[*] BACKLOG MODE: Target {target_anime_url}", file=sys.stderr)
+        print(f"[*] BACKLOG MODE: Target {target_anime_url} (Explicit MAL ID: {target_mal_id or 'None'})", file=sys.stderr)
         all_episodes = get_all_episodes_from_anime(target_anime_url, allowed_eps=allowed_eps)
-        print(f"[*] Found {len(all_episodes)} total episodes for range.", file=sys.stderr)
+        print(f"[*] Found {len(all_episodes)} total episodes matching filter.", file=sys.stderr)
 
         for item in all_episodes:
             mal_info = get_mal(item["title"], item.get("jp_title"))
-            if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
-                print(f"[-] Already uploaded in history: {item['title']} Ep {item['episode']}. Skipping.", file=sys.stderr)
+            
+            # 3-Way Deduplication check: AnimeID + MAL ID + Title
+            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
+                print(f"[-] Already uploaded in history: {item['title']} Ep {item['episode']}. Skipping duplicate.", file=sys.stderr)
                 continue
 
             direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
@@ -266,7 +301,7 @@ def main():
                 continue
 
             mal_info = get_mal(item["title"], item.get("jp_title"))
-            if is_already_uploaded(history, mal_info.get("mal_id"), item["title"], item["episode"]):
+            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
                 continue
 
             session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])

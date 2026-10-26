@@ -11,6 +11,11 @@ on:
         required: false
         default: ''
         type: string
+      target_mal_id:
+        description: 'Mandatory MAL ID when launching manual backlog upload.'
+        required: false
+        default: ''
+        type: string
       episode_range:
         description: 'Episode Range filter (e.g. 1-12, 13-24, 5, or 1-5,10-15). Leave blank or "all" to upload all available.'
         required: false
@@ -44,6 +49,7 @@ jobs:
         id: detect_step
         env:
           TARGET_ANIME_URL: ${{ inputs.target_anime_url }}
+          TARGET_MAL_ID: ${{ inputs.target_mal_id }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
@@ -111,6 +117,7 @@ jobs:
       - name: Sync history
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
         run: |
           python sync_history.py downloaded_artifacts
 
