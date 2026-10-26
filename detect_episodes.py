@@ -14,7 +14,7 @@ import base64
 import urllib.request
 from typing import Dict, List, Optional, Set
 
-from mal_resolver import resolve_mal_metadata
+from mal_resolver import resolve_mal_metadata, fetch_official_mal_info
 from mapping_crypto import decrypt_mapping
 
 ANIMEHEAVEN_BASE = "https://animeheaven.me"
@@ -168,13 +168,22 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     anime_id = anime_url.split("?")[-1]
     html_content = http_get(anime_url)
 
-    title_match = re.search(r'<div class=[\'"]linetitle2? c[\'"][^>]*>([^<]+)</div>', html_content)
+    # 1. Look for official AnimeHeaven main title divs (.infotitle)
+    title_match = re.search(r'<div class=[\'"][^\'"]*infotitle\s+c[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
     if not title_match:
+        # 2. Look for <title> tag (e.g. "Kaiju No. 8 Anime | AnimeHeaven.Me")
         title_match = re.search(r'<title>([^<]+)</title>', html_content)
+    
     raw_title = title_match.group(1) if title_match else anime_id
-    anime_title = re.sub(r'AnimeHeaven.*', '', html.unescape(raw_title)).strip()
+    # Clean out "Anime", "AnimeHeaven", "Watch" suffixes from title
+    anime_title = re.sub(r'(?i)\s+(?:anime|animeheaven).*$', '', html.unescape(raw_title)).strip()
+    # Strip any pipes or dashes
+    anime_title = re.sub(r'\s*[|\-].*$', '', anime_title).strip()
 
-    jp_match = re.search(r'<div class=[\'"]altname[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
+    # Japanese Romaji Title (.infotitlejp)
+    jp_match = re.search(r'<div class=[\'"][^\'"]*infotitlejp\s+c[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
+    if not jp_match:
+        jp_match = re.search(r'<div class=[\'"]altname[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
     jp_title = jp_match.group(1).strip() if jp_match else None
 
     pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
@@ -247,20 +256,29 @@ def main():
     def get_mal(title: str, jp_title: Optional[str]):
         cache_key = f"{title}_{jp_title}"
         if cache_key not in mal_cache:
-            # If target_mal_id is provided explicitly by user, prioritize it
+            # If target_mal_id is provided explicitly by user, fetch official English Title directly from MAL API
             if target_mal_id and target_mal_id.isdigit():
-                mal_cache[cache_key] = {
-                    "mal_id": int(target_mal_id),
-                    "title": title,
-                    "title_english": title,
-                    "title_japanese": jp_title,
-                    "media_type": "TV",
-                    "total_episodes": None
-                }
+                numeric_mal = int(target_mal_id)
+                official_meta = fetch_official_mal_info(numeric_mal, mal_client_id) if mal_client_id else None
+                if official_meta:
+                    print(f"[*] Fetched Official MAL Title for Explicit ID {numeric_mal}: '{official_meta['title']}'", file=sys.stderr)
+                    mal_cache[cache_key] = official_meta
+                else:
+                    mal_cache[cache_key] = {
+                        "mal_id": numeric_mal,
+                        "title": title,
+                        "title_english": title,
+                        "title_japanese": jp_title,
+                        "media_type": "TV",
+                        "total_episodes": None
+                    }
             else:
+                # Automatic match engine (AniVault port) for fresh releases
                 mal_cache[cache_key] = resolve_mal_metadata(title, jp_title=jp_title, client_id=mal_client_id)
+
             mal_id = mal_cache[cache_key].get("mal_id")
-            print(f"[*] MAL Match for '{title}': MAL ID -> {mal_id or 'N/A'}", file=sys.stderr)
+            resolved_title = mal_cache[cache_key].get("title", title)
+            print(f"[*] MAL Match for '{title}': MAL ID -> {mal_id or 'N/A'} | Title -> '{resolved_title}'", file=sys.stderr)
         return mal_cache[cache_key]
 
     if target_anime_url:
