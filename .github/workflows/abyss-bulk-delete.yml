@@ -1,0 +1,54 @@
+name: Abyss Bulk Video Deleter
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_delete:
+        description: 'Type "DELETE_ALL_ABYSS" to confirm wipeout'
+        required: true
+        default: 'DELETE_ALL_ABYSS'
+
+jobs:
+  bulk_delete:
+    name: Wipeout All Abyss Videos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Confirmation
+        run: |
+          if [ "${{ inputs.confirm_delete }}" != "DELETE_ALL_ABYSS" ]; then
+            echo "[ERROR] Confirmation phrase did not match. Aborting to protect data."
+            exit 1
+          fi
+
+      - name: Checkout Code & History
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Crypto Dependencies
+        run: pip install cryptography
+
+      - name: Run Bulk Delete
+        env:
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          ABYSS_EMAIL: ${{ secrets.ABYSS_EMAIL }}
+          ABYSS_PASSWORD: ${{ secrets.ABYSS_PASSWORD }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+        run: python bulk_delete_abyss.py
+
+      - name: Commit Updated History
+        run: |
+          git config --global user.name "Abyss-Wipeout-Bot"
+          git config --global user.email "bot@heaven.local"
+          git add uploaded_episodes.json
+          if git diff --staged --quiet; then
+            echo "[i] No history changes to commit."
+          else
+            git commit -m "Cleanup: Bulk deleted all Abyss videos from account & database"
+            git push origin main
+          fi

@@ -407,6 +407,7 @@ def main():
 
             # Target-Aware Deduplication check
             if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"], upload_target):
+                print(f"[-] Already uploaded for target ({upload_target}): {item['title']} Ep {item['episode']}. Skipping duplicate.", file=sys.stderr)
                 continue
 
             session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])
