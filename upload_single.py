@@ -11,6 +11,7 @@ import sys
 import time
 import json
 import base64
+import random
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -76,74 +77,67 @@ def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
     }
 
 
-def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
-    print(f"[*] Uploading to Telegram Channel ({chat_id}): {safe_name}")
-    clean_token = bot_token.strip()
+def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
+    # Parse and extract multi-bot tokens (supports token1,token2,token3...)
+    all_tokens = [t.strip() for t in re.split(r'[,;|\s]+', bot_tokens_raw) if t.strip()]
+    if not all_tokens:
+        print("[!] No valid Telegram bot tokens provided. Skipping Telegram upload.")
+        return None
+
+    # Shuffle tokens so concurrent GitHub runners distribute evenly across available bots
+    random.shuffle(all_tokens)
     clean_chat = chat_id.strip()
 
-    # Determine Base API (Use Local Bot API if available, else Cloud API)
     base_api = local_api_url.rstrip("/") if local_api_url else "https://api.telegram.org"
-    endpoint = f"{base_api}/bot{clean_token}/sendVideo"
-    print(f"[*] Dispatching Telegram transmission via: {base_api}")
+    print(f"[*] Uploading to Telegram Channel ({clean_chat}): {safe_name} via {len(all_tokens)} Bot Token(s) Pool")
 
-    cmd_tg = [
-        "curl", "-sS",
-        "--connect-timeout", "30",
-        "--max-time", "1800",
-        "-F", f"chat_id={clean_chat}",
-        "-F", f"caption={caption}",
-        "-F", "supports_streaming=true",
-        "-F", f"video=@{temp_file};filename={safe_name}",
-        endpoint
-    ]
+    last_error = None
+    for token_idx, bot_token in enumerate(all_tokens, 1):
+        clean_token = bot_token.strip()
+        endpoint = f"{base_api}/bot{clean_token}/sendVideo"
+        print(f"[*] Dispatching via Bot #{token_idx}...")
 
-    max_retries = 5
-    for attempt in range(1, max_retries + 1):
+        cmd_tg = [
+            "curl", "-sS",
+            "--connect-timeout", "30",
+            "--max-time", "1800",
+            "-F", f"chat_id={clean_chat}",
+            "-F", f"caption={caption}",
+            "-F", "supports_streaming=true",
+            "-F", f"video=@{temp_file};filename={safe_name}",
+            endpoint
+        ]
+
         proc = subprocess.run(cmd_tg, capture_output=True, text=True)
         if proc.returncode != 0:
-            if attempt == max_retries:
-                raise RuntimeError(f"Telegram upload curl error: {proc.stderr}")
-            print(f"[!] Curl network error on attempt {attempt}. Retrying in 5s...")
-            time.sleep(5)
+            print(f"[!] Bot #{token_idx} curl network error: {proc.stderr}. Trying next bot in pool...")
+            last_error = proc.stderr
             continue
 
         try:
             res = json.loads(proc.stdout)
         except Exception as e:
-            if attempt == max_retries:
-                raise RuntimeError(f"Telegram parse error: {proc.stdout[:200]}") from e
-            print(f"[!] JSON parse error on attempt {attempt}. Retrying in 5s...")
-            time.sleep(5)
+            print(f"[!] Bot #{token_idx} JSON parse error: {proc.stdout[:200]}. Trying next bot...")
+            last_error = str(e)
             continue
 
         if not res.get("ok"):
             err_desc = str(res.get("description", res))
-            # Handle Telegram Rate Limiting (Too Many Requests / retry after X)
-            retry_after_match = re.search(r"retry after\s*(\d+)", err_desc, re.IGNORECASE)
-            param_retry_after = res.get("parameters", {}).get("retry_after")
-            
-            wait_sec = None
-            if param_retry_after:
-                wait_sec = int(param_retry_after) + 1
-            elif retry_after_match:
-                wait_sec = int(retry_after_match.group(1)) + 1
+            print(f"[!] Bot #{token_idx} error: {err_desc}")
+            last_error = err_desc
 
-            if wait_sec is not None:
-                # If Telegram asks to wait more than 60 seconds (FloodWait), do NOT stall GitHub Runner for an hour!
-                if wait_sec > 60:
-                    print(f"[!] Telegram Flood/Rate Limit is too long ({wait_sec}s). Skipping Telegram upload for this episode to prevent runner timeout.")
-                    return None
-                print(f"[!] Telegram Rate Limit hit: {err_desc}. Sleeping for {wait_sec}s before retry ({attempt}/{max_retries})...")
-                time.sleep(wait_sec)
+            # If this bot is rate limited or flood waited, immediately switch to NEXT BOT!
+            if "too many requests" in err_desc.lower() or "retry after" in err_desc.lower():
+                print(f"[⚡ FAILOVER] Bot #{token_idx} is rate limited. Instantly switching to Next Bot in pool!")
                 continue
 
-            # If it's another temporary error, retry with backoff
-            if "temporarily unavailable" in err_desc.lower() or "timeout" in err_desc.lower():
-                print(f"[!] Telegram temporary server error: {err_desc}. Retrying in {attempt * 3}s...")
-                time.sleep(attempt * 3)
+            # If invalid token, try next bot
+            if "unauthorized" in err_desc.lower():
                 continue
 
-            raise RuntimeError(f"Telegram API error: {err_desc}")
+            # Otherwise small sleep and try next bot
+            time.sleep(2)
+            continue
 
         result_data = res.get("result", {})
         message_id = result_data.get("message_id")
@@ -158,7 +152,7 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: 
             clean_chan_id = clean_chan_id[1:]
 
         post_url = f"https://t.me/c/{clean_chan_id}/{message_id}" if message_id else ""
-        print(f"[SUCCESS] Uploaded to Telegram! Msg ID: {message_id} | Link: {post_url}")
+        print(f"[SUCCESS] Uploaded to Telegram via Bot #{token_idx}! Msg ID: {message_id} | Link: {post_url}")
 
         return {
             "message_id": message_id,
@@ -167,7 +161,8 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: 
             "post_url": post_url
         }
 
-    raise RuntimeError("Telegram upload failed after exceeding max retry attempts.")
+    print(f"[!] All {len(all_tokens)} Telegram bots failed or were rate-limited. Last error: {last_error}")
+    return None
 
 
 def main():
