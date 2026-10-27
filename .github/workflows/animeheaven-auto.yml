@@ -147,6 +147,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
 
       - name: Download Artifacts
         uses: actions/download-artifact@v4
@@ -162,16 +165,52 @@ jobs:
       - name: Install cryptography
         run: pip install cryptography
 
-      - name: Sync history
+      - name: Sync history & Commit
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
         run: |
-          python sync_history.py downloaded_artifacts
-
-      - name: Commit & Push Encrypted History
-        run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add uploaded_episodes.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto: Synced & Encrypted uploaded episodes history" && git push)
+
+          MAX_RETRIES=5
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "[*] Syncing history and pushing to main (Attempt $i/$MAX_RETRIES)..."
+            
+            # Fetch latest remote changes and reset tracking cleanly
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Run sync script to merge downloaded artifacts into the latest history
+            python sync_history.py downloaded_artifacts
+
+            # Stage changes
+            git add uploaded_episodes.json
+
+            # Check if there are any changes to commit
+            if git diff --staged --quiet; then
+              echo "[i] No history changes to commit."
+              SUCCESS=true
+              break
+            fi
+
+            # Commit changes
+            git commit -m "Auto: Synced & Encrypted uploaded episodes history"
+
+            # Attempt push
+            if git push origin main; then
+              echo "[SUCCESS] Pushed updated history to origin/main successfully!"
+              SUCCESS=true
+              break
+            fi
+
+            echo "[WARN] Push rejected due to concurrent remote changes. Retrying in 3s..."
+            sleep 3
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "[ERROR] Failed to push history to GitHub after $MAX_RETRIES attempts."
+            exit 1
+          fi
