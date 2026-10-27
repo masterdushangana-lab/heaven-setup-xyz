@@ -1,8 +1,11 @@
 """
 AnimeHeaven Episode Detector & Matrix Generator
 Features:
+- Target-Aware Deduplication (Both, Abyss-only, Telegram-only):
+  If an episode exists in Abyss but NOT in Telegram, selecting Telegram upload will NOT skip it as duplicate!
 - Mandatory MAL ID support for manual backlog uploads.
-- Bulletproof 3-way deduplication (AnimeID, MAL ID, Title) to eliminate redundant re-uploads.
+- Permanent Blacklist support (deleted_episodes.json).
+- Preserves exact AnimeHeaven new.php discovery order.
 """
 
 import os
@@ -20,6 +23,7 @@ from mapping_crypto import decrypt_mapping
 ANIMEHEAVEN_BASE = "https://animeheaven.me"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 STATE_FILE = "uploaded_episodes.json"
+DELETED_FILE = "deleted_episodes.json"
 
 
 def parse_episode_range(range_str: str) -> Optional[Set[int]]:
@@ -72,40 +76,113 @@ def load_history(password: str) -> Dict[str, dict]:
     return {}
 
 
-def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
-    """
-    Bulletproof 3-way check:
-    1. Checks if anime_id matches anywhere inside history items.
-    2. Checks MAL ID if available.
-    3. Checks primary title key.
-    """
+def load_deleted_episodes(password: str = "") -> dict:
+    if os.path.exists(DELETED_FILE):
+        try:
+            with open(DELETED_FILE, "r", encoding="utf-8") as f:
+                content = json.load(f)
+            if isinstance(content, dict) and content.get("algorithm") == "AES-256-GCM" and password:
+                return decrypt_mapping(content, password)
+            elif isinstance(content, dict):
+                return content
+        except Exception as e:
+            print(f"[!] Warning reading deleted episodes: {e}.", file=sys.stderr)
+            return {}
+    return {}
+
+
+def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
+    if not deleted_records:
+        return False
     ep_str = str(episode_num)
 
-    # Check 1: By MAL ID key
+    if anime_id and anime_id in deleted_records:
+        if ep_str in deleted_records[anime_id].get("episodes", []):
+            return True
+
+    if mal_id and str(mal_id) in deleted_records:
+        if ep_str in deleted_records[str(mal_id)].get("episodes", []):
+            return True
+
+    if anime_title and anime_title in deleted_records:
+        if ep_str in deleted_records[anime_title].get("episodes", []):
+            return True
+
+    for key, val in deleted_records.items():
+        if not isinstance(val, dict):
+            continue
+        m_aid = val.get("animeheaven_id")
+        m_mal = val.get("mal_id")
+        m_title = val.get("title")
+        eps = val.get("episodes", [])
+        if ep_str in eps or int(episode_num) in eps:
+            if m_aid and m_aid == anime_id:
+                return True
+            if mal_id and m_mal and int(m_mal) == int(mal_id):
+                return True
+            if m_title and m_title.lower() == anime_title.lower():
+                return True
+
+    return False
+
+
+def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> Optional[dict]:
+    """Finds the existing episode record in history if available."""
+    ep_str = str(episode_num)
+
+    # 1. By MAL ID
     if mal_id and str(mal_id) in history:
-        if ep_str in history[str(mal_id)].get("episodes", {}):
-            return True
+        eps = history[str(mal_id)].get("episodes", {})
+        if ep_str in eps:
+            return eps[ep_str]
 
-    # Check 2: By Title key
+    # 2. By Title
     if anime_title in history:
-        if ep_str in history[anime_title].get("episodes", {}):
-            return True
+        eps = history[anime_title].get("episodes", {})
+        if ep_str in eps:
+            return eps[ep_str]
 
-    # Check 3: Deep check across all entries by animeheaven_id or anime_url
+    # 3. Deep search
     for entry_key, entry_val in history.items():
         saved_aid = entry_val.get("animeheaven_id")
         saved_mal = entry_val.get("mal_id")
-        
         match = False
         if saved_aid and saved_aid == anime_id:
             match = True
         elif mal_id and saved_mal and int(saved_mal) == int(mal_id):
             match = True
 
-        if match and ep_str in entry_val.get("episodes", {}):
-            return True
+        if match:
+            eps = entry_val.get("episodes", {})
+            if ep_str in eps:
+                return eps[ep_str]
 
-    return False
+    return None
+
+
+def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int, upload_target: str = "both") -> bool:
+    """
+    Target-Aware Deduplication check:
+    - If upload_target == 'abyss': Only checks if Abyss slug already exists.
+    - If upload_target == 'telegram': Only checks if Telegram post already exists.
+    - If upload_target == 'both': Returns True only if BOTH Abyss and Telegram already exist!
+    """
+    ep_record = get_existing_episode_record(history, anime_id, mal_id, anime_title, episode_num)
+    if not ep_record:
+        return False
+
+    has_abyss = bool(ep_record.get("slug"))
+    has_telegram = bool(ep_record.get("telegram"))
+
+    if upload_target == "abyss":
+        return has_abyss
+    elif upload_target == "telegram":
+        return has_telegram
+    elif upload_target == "both":
+        # If user wants both, but it only has Abyss, we need to upload to Telegram!
+        return has_abyss and has_telegram
+
+    return True
 
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
@@ -168,19 +245,14 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
     anime_id = anime_url.split("?")[-1]
     html_content = http_get(anime_url)
 
-    # 1. Look for official AnimeHeaven main title divs (.infotitle)
     title_match = re.search(r'<div class=[\'"][^\'"]*infotitle\s+c[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
     if not title_match:
-        # 2. Look for <title> tag (e.g. "Kaiju No. 8 Anime | AnimeHeaven.Me")
         title_match = re.search(r'<title>([^<]+)</title>', html_content)
     
     raw_title = title_match.group(1) if title_match else anime_id
-    # Clean out "Anime", "AnimeHeaven", "Watch" suffixes from title
     anime_title = re.sub(r'(?i)\s+(?:anime|animeheaven).*$', '', html.unescape(raw_title)).strip()
-    # Strip any pipes or dashes
     anime_title = re.sub(r'\s*[|\-].*$', '', anime_title).strip()
 
-    # Japanese Romaji Title (.infotitlejp)
     jp_match = re.search(r'<div class=[\'"][^\'"]*infotitlejp\s+c[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
     if not jp_match:
         jp_match = re.search(r'<div class=[\'"]altname[^\'"]*[\'"][^>]*>([^<]+)</div>', html_content)
@@ -245,18 +317,21 @@ def main():
     target_anime_url = os.getenv("TARGET_ANIME_URL", "").strip()
     target_mal_id = os.getenv("TARGET_MAL_ID", "").strip()
     episode_range_str = os.getenv("EPISODE_RANGE", "").strip()
+    upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
     mal_client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     mapping_password = os.getenv("MAPPING_PASSWORD", "").strip()
     allowed_eps = parse_episode_range(episode_range_str)
 
     history = load_history(mapping_password)
+    deleted_records = load_deleted_episodes(mapping_password)
     pending = []
     mal_cache = {}
+
+    print(f"[*] Pipeline Upload Target Mode: '{upload_target.upper()}'", file=sys.stderr)
 
     def get_mal(title: str, jp_title: Optional[str]):
         cache_key = f"{title}_{jp_title}"
         if cache_key not in mal_cache:
-            # If target_mal_id is provided explicitly by user, fetch official English Title directly from MAL API
             if target_mal_id and target_mal_id.isdigit():
                 numeric_mal = int(target_mal_id)
                 official_meta = fetch_official_mal_info(numeric_mal, mal_client_id) if mal_client_id else None
@@ -273,7 +348,6 @@ def main():
                         "total_episodes": None
                     }
             else:
-                # Automatic match engine (AniVault port) for fresh releases
                 mal_cache[cache_key] = resolve_mal_metadata(title, jp_title=jp_title, client_id=mal_client_id)
 
             mal_id = mal_cache[cache_key].get("mal_id")
@@ -289,9 +363,14 @@ def main():
         for item in all_episodes:
             mal_info = get_mal(item["title"], item.get("jp_title"))
             
-            # 3-Way Deduplication check: AnimeID + MAL ID + Title
-            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
-                print(f"[-] Already uploaded in history: {item['title']} Ep {item['episode']}. Skipping duplicate.", file=sys.stderr)
+            # Check permanent blacklist
+            if is_episode_blacklisted(deleted_records, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
+                print(f"[-] Explicitly deleted by user (Blacklisted): {item['title']} Ep {item['episode']}. Skipping.", file=sys.stderr)
+                continue
+
+            # Target-Aware Deduplication check
+            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"], upload_target):
+                print(f"[-] Already uploaded for target ({upload_target}): {item['title']} Ep {item['episode']}. Skipping duplicate.", file=sys.stderr)
                 continue
 
             direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
@@ -305,7 +384,8 @@ def main():
                 "filename": filename,
                 "anime_id": item["anime_id"],
                 "anime_url": item["anime_url"],
-                "mal_info": mal_info
+                "mal_info": mal_info,
+                "upload_target": upload_target
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
@@ -314,12 +394,19 @@ def main():
         releases = get_recent_releases(limit=40)
         print(f"[*] FRESH MODE: Found {len(releases)} recent items.", file=sys.stderr)
 
-        for item in releases:
+        for rank_idx, item in enumerate(releases):
             if allowed_eps is not None and item["episode"] not in allowed_eps:
                 continue
 
             mal_info = get_mal(item["title"], item.get("jp_title"))
-            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
+
+            # Check permanent blacklist
+            if is_episode_blacklisted(deleted_records, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"]):
+                print(f"[-] Explicitly deleted by user (Blacklisted): {item['title']} Ep {item['episode']}. Skipping.", file=sys.stderr)
+                continue
+
+            # Target-Aware Deduplication check
+            if is_already_uploaded(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"], upload_target):
                 continue
 
             session_key = find_episode_key_on_anime_page(item["anime_url"], item["episode"])
@@ -338,7 +425,9 @@ def main():
                 "filename": filename,
                 "anime_id": item["anime_id"],
                 "anime_url": item["anime_url"],
-                "mal_info": mal_info
+                "mal_info": mal_info,
+                "new_php_rank": rank_idx,
+                "upload_target": upload_target
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)

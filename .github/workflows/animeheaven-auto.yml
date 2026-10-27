@@ -60,6 +60,7 @@ jobs:
           TARGET_ANIME_URL: ${{ inputs.target_anime_url }}
           TARGET_MAL_ID: ${{ inputs.target_mal_id }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
         run: |
