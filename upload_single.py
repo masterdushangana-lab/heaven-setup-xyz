@@ -96,39 +96,73 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: 
         endpoint
     ]
 
-    proc = subprocess.run(cmd_tg, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Telegram upload curl error: {proc.stderr}")
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        proc = subprocess.run(cmd_tg, capture_output=True, text=True)
+        if proc.returncode != 0:
+            if attempt == max_retries:
+                raise RuntimeError(f"Telegram upload curl error: {proc.stderr}")
+            print(f"[!] Curl network error on attempt {attempt}. Retrying in 5s...")
+            time.sleep(5)
+            continue
 
-    try:
-        res = json.loads(proc.stdout)
-    except Exception as e:
-        raise RuntimeError(f"Telegram parse error: {proc.stdout[:200]}") from e
+        try:
+            res = json.loads(proc.stdout)
+        except Exception as e:
+            if attempt == max_retries:
+                raise RuntimeError(f"Telegram parse error: {proc.stdout[:200]}") from e
+            print(f"[!] JSON parse error on attempt {attempt}. Retrying in 5s...")
+            time.sleep(5)
+            continue
 
-    if not res.get("ok"):
-        raise RuntimeError(f"Telegram API error: {res.get('description', res)}")
+        if not res.get("ok"):
+            err_desc = str(res.get("description", res))
+            # Handle Telegram Rate Limiting (Too Many Requests / retry after X)
+            retry_after_match = re.search(r"retry after\s*(\d+)", err_desc, re.IGNORECASE)
+            param_retry_after = res.get("parameters", {}).get("retry_after")
+            
+            wait_sec = None
+            if param_retry_after:
+                wait_sec = int(param_retry_after) + 1
+            elif retry_after_match:
+                wait_sec = int(retry_after_match.group(1)) + 1
 
-    result_data = res.get("result", {})
-    message_id = result_data.get("message_id")
-    video_info = result_data.get("video", {})
-    file_id = video_info.get("file_id")
+            if wait_sec is not None:
+                print(f"[!] Telegram Flood/Rate Limit hit: {err_desc}. Sleeping for {wait_sec}s before retry ({attempt}/{max_retries})...")
+                time.sleep(wait_sec)
+                continue
 
-    # Clean channel ID for direct t.me link
-    clean_chan_id = clean_chat
-    if clean_chan_id.startswith("-100"):
-        clean_chan_id = clean_chan_id[4:]
-    elif clean_chan_id.startswith("-"):
-        clean_chan_id = clean_chan_id[1:]
+            # If it's another temporary error, retry with backoff
+            if "temporarily unavailable" in err_desc.lower() or "timeout" in err_desc.lower():
+                print(f"[!] Telegram temporary server error: {err_desc}. Retrying in {attempt * 3}s...")
+                time.sleep(attempt * 3)
+                continue
 
-    post_url = f"https://t.me/c/{clean_chan_id}/{message_id}" if message_id else ""
-    print(f"[SUCCESS] Uploaded to Telegram! Msg ID: {message_id} | Link: {post_url}")
+            raise RuntimeError(f"Telegram API error: {err_desc}")
 
-    return {
-        "message_id": message_id,
-        "file_id": file_id,
-        "channel_id": clean_chat,
-        "post_url": post_url
-    }
+        result_data = res.get("result", {})
+        message_id = result_data.get("message_id")
+        video_info = result_data.get("video", {})
+        file_id = video_info.get("file_id")
+
+        # Clean channel ID for direct t.me link
+        clean_chan_id = clean_chat
+        if clean_chan_id.startswith("-100"):
+            clean_chan_id = clean_chan_id[4:]
+        elif clean_chan_id.startswith("-"):
+            clean_chan_id = clean_chan_id[1:]
+
+        post_url = f"https://t.me/c/{clean_chan_id}/{message_id}" if message_id else ""
+        print(f"[SUCCESS] Uploaded to Telegram! Msg ID: {message_id} | Link: {post_url}")
+
+        return {
+            "message_id": message_id,
+            "file_id": file_id,
+            "channel_id": clean_chat,
+            "post_url": post_url
+        }
+
+    raise RuntimeError("Telegram upload failed after exceeding max retry attempts.")
 
 
 def main():
