@@ -80,6 +80,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
+        run: |
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            echo "[*] Launching Local Telegram Bot API server container..."
+            mkdir -p /tmp/tg-bot-api-data
+            docker run -d \
+              --name tg-local-api \
+              -p 8081:8081 \
+              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
+              -e TELEGRAM_API_ID="${TG_API_ID}" \
+              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
+              aiogram/telegram-bot-api:latest \
+              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
+            
+            for i in {1..30}; do
+              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
+                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
+                break
+              fi
+              sleep 1
+            done
+          else
+            echo "[WARN] TELEGRAM_API_ID or TELEGRAM_API_HASH not found in Secrets. Local bot API skipped."
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -88,12 +116,19 @@ jobs:
       - name: Upload Episode
         env:
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
           UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
           ITEM_META_B64: ${{ matrix.item.meta_b64 }}
         run: |
           python upload_single.py
+
+      - name: Stop Local Telegram Bot API Server
+        if: always()
+        run: |
+          docker stop tg-local-api 2>/dev/null || true
+          docker rm tg-local-api 2>/dev/null || true
 
       - name: Save Result Artifact
         uses: actions/upload-artifact@v4

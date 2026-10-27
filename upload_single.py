@@ -75,15 +75,20 @@ def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
     }
 
 
-def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: str, caption: str) -> dict:
+def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
     print(f"[*] Uploading to Telegram Channel ({chat_id}): {safe_name}")
     clean_token = bot_token.strip()
     clean_chat = chat_id.strip()
-    
-    # Official Telegram Bot sendVideo endpoint
-    endpoint = f"https://api.telegram.org/bot{clean_token}/sendVideo"
+
+    # Determine Base API (Use Local Bot API if available, else Cloud API)
+    base_api = local_api_url.rstrip("/") if local_api_url else "https://api.telegram.org"
+    endpoint = f"{base_api}/bot{clean_token}/sendVideo"
+    print(f"[*] Dispatching Telegram transmission via: {base_api}")
+
     cmd_tg = [
         "curl", "-sS",
+        "--connect-timeout", "30",
+        "--max-time", "1800",
         "-F", f"chat_id={clean_chat}",
         "-F", f"caption={caption}",
         "-F", "supports_streaming=true",
@@ -130,6 +135,7 @@ def main():
     abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    local_api_url = os.getenv("TG_LOCAL_API_URL", "http://127.0.0.1:8081").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
 
     meta_b64 = os.getenv("ITEM_META_B64", "").strip()
@@ -173,7 +179,7 @@ def main():
                 ep_title = item_data.get("title", "Anime")
                 ep_num = item_data.get("episode", 1)
                 caption = f"🎬 {ep_title} - Episode {ep_num}"
-                tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption)
+                tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption, local_api_url=local_api_url)
                 result["telegram"] = tg_res
             else:
                 print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
