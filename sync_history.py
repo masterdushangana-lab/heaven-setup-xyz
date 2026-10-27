@@ -95,7 +95,7 @@ def main():
                         with open(full_path, "r", encoding="utf-8") as jf:
                             data = json.load(jf)
 
-                        if not (data.get("success") and data.get("slug")):
+                        if not (data.get("slug") or data.get("telegram")):
                             continue
 
                         title = data.get("title", "Unknown Anime")
@@ -117,18 +117,26 @@ def main():
                                 "episodes": {}
                             }
                         elif not history[primary_key].get("mal_id") and mal_id:
-                            # Update existing unindexed entry with newly found MAL ID
                             history[primary_key]["mal_id"] = mal_id
 
-                        history[primary_key]["episodes"][ep_num] = {
-                            "slug": data["slug"],
-                            "embed_url": f"https://player.abyssplayer.com/{data['slug']}",
-                            "filename": data.get("filename"),
-                            "size_mb": data.get("size_mb"),
-                            "uploaded_at": int(time.time())
-                        }
+                        rank = data.get("new_php_rank")
+                        computed_ts = int(time.time()) - (int(rank) if rank is not None else 0)
+
+                        ep_record = history[primary_key]["episodes"].get(ep_num, {})
+                        if data.get("slug"):
+                            ep_record["slug"] = data["slug"]
+                            ep_record["embed_url"] = f"https://player.abyssplayer.com/{data['slug']}"
+                        if data.get("telegram"):
+                            ep_record["telegram"] = data["telegram"]
+                        if data.get("filename"):
+                            ep_record["filename"] = data.get("filename")
+                        if data.get("size_mb"):
+                            ep_record["size_mb"] = data.get("size_mb")
+                        ep_record["uploaded_at"] = computed_ts
+
+                        history[primary_key]["episodes"][ep_num] = ep_record
                         updated_count += 1
-                        print(f"[+] Mapped MAL[{primary_key}] -> Ep {ep_num} -> {data['slug']}")
+                        print(f"[+] Mapped MAL[{primary_key}] -> Ep {ep_num} -> Abyss: {data.get('slug')} | Telegram: {bool(data.get('telegram'))}")
 
                     except Exception as e:
                         print(f"[!] Error parsing {full_path}: {e}")

@@ -21,6 +21,15 @@ on:
         required: false
         default: 'all'
         type: string
+      upload_target:
+        description: 'Where to upload: both, abyss, or telegram'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - abyss
+          - telegram
 
 concurrency:
   group: animeheaven-pipeline
@@ -78,6 +87,9 @@ jobs:
       - name: Upload Episode
         env:
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
           ITEM_META_B64: ${{ matrix.item.meta_b64 }}
         run: |
           python upload_single.py

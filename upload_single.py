@@ -1,6 +1,7 @@
 """
-Single Episode Direct Uploader to Abyss.to
-Downloads using verified AnimeHeaven Referer and uploads directly to Abyss without re-encoding.
+Single Episode Direct Uploader to Abyss.to and Telegram
+Downloads using verified AnimeHeaven Referer.
+Uploads to Abyss.to and/or Private Telegram Channel without re-encoding.
 Compatible with standard Linux curl (ubuntu-latest).
 """
 
@@ -11,78 +12,125 @@ import json
 import base64
 import subprocess
 import urllib.parse
+from pathlib import Path
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
-def upload_to_abyss(direct_url: str, output_name: str, abyss_api_key: str) -> dict:
-    print(f"[*] Starting download & upload for: {output_name}")
+def download_stream(direct_url: str, output_name: str) -> str:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
 
     temp_file = f"temp_{safe_name}"
+    print(f"[*] Downloading source stream: {direct_url}")
+    cmd_dl = [
+        "curl", "-sSL",
+        "-H", f"User-Agent: {USER_AGENT}",
+        "-H", "Referer: https://animeheaven.me/",
+        "--tcp-nodelay",
+        "--connect-timeout", "30",
+        "-o", temp_file,
+        direct_url
+    ]
+    res = subprocess.run(cmd_dl)
+    if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 1000000:
+        raise RuntimeError(f"Download failed or incomplete file size (exit code {res.returncode})")
+
+    file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
+    print(f"[+] Download complete: {file_size_mb:.2f} MB.")
+    return temp_file
+
+
+def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
+    print(f"[*] Uploading to Abyss.to: {safe_name}")
+    upload_endpoint = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key, safe='')}"
+    cmd_up = [
+        "curl", "-sS",
+        "-H", "Expect:",
+        "--http1.1",
+        "--tcp-nodelay",
+        "--connect-timeout", "30",
+        "-F", f"file=@{temp_file};filename={safe_name}",
+        upload_endpoint
+    ]
+
+    proc = subprocess.run(cmd_up, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Abyss upload curl error: {proc.stderr}")
+
     try:
-        # Step 1: Direct Download stream with proper Referer
-        print(f"[*] Downloading source stream: {direct_url}")
-        cmd_dl = [
-            "curl", "-sSL",
-            "-H", f"User-Agent: {USER_AGENT}",
-            "-H", "Referer: https://animeheaven.me/",
-            "--tcp-nodelay",
-            "--connect-timeout", "30",
-            "-o", temp_file,
-            direct_url
-        ]
-        res = subprocess.run(cmd_dl)
-        if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 1000000:
-            raise RuntimeError(f"Download failed or incomplete file size (exit code {res.returncode})")
-
-        file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
-        print(f"[+] Download complete: {file_size_mb:.2f} MB. Preserving original resolution.")
-
-        # Step 2: Upload to Abyss.to via up.abyss.to/{key}
-        upload_endpoint = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key, safe='')}"
-        cmd_up = [
-            "curl", "-sS",
-            "-H", "Expect:",
-            "--http1.1",
-            "--tcp-nodelay",
-            "--connect-timeout", "30",
-            "-F", f"file=@{temp_file};filename={safe_name}",
-            upload_endpoint
-        ]
-
-        proc = subprocess.run(cmd_up, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"Abyss upload curl error: {proc.stderr}")
-
         data = json.loads(proc.stdout)
-        slug = data.get("slug") or data.get("file_id") or data.get("id")
-        if not slug:
-            raise RuntimeError(f"Unexpected Abyss response: {data}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to parse Abyss response JSON: {proc.stdout[:200]}") from e
 
-        print(f"[SUCCESS] Uploaded to Abyss! File Slug: {slug}")
-        return {
-            "success": True,
-            "slug": slug,
-            "embed_url": f"https://abyss.to/{slug}",
-            "size_mb": round(file_size_mb, 2)
-        }
+    slug = data.get("slug") or data.get("file_id") or data.get("id")
+    if not slug:
+        raise RuntimeError(f"Unexpected Abyss response: {data}")
 
-    finally:
-        if os.path.exists(temp_file):
-            try:
-                os.remove(temp_file)
-            except Exception:
-                pass
+    print(f"[SUCCESS] Uploaded to Abyss! File Slug: {slug}")
+    return {
+        "slug": slug,
+        "embed_url": f"https://abyss.to/{slug}"
+    }
+
+
+def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: str, caption: str) -> dict:
+    print(f"[*] Uploading to Telegram Channel ({chat_id}): {safe_name}")
+    clean_token = bot_token.strip()
+    clean_chat = chat_id.strip()
+    
+    # Official Telegram Bot sendVideo endpoint
+    endpoint = f"https://api.telegram.org/bot{clean_token}/sendVideo"
+    cmd_tg = [
+        "curl", "-sS",
+        "-F", f"chat_id={clean_chat}",
+        "-F", f"caption={caption}",
+        "-F", "supports_streaming=true",
+        "-F", f"video=@{temp_file};filename={safe_name}",
+        endpoint
+    ]
+
+    proc = subprocess.run(cmd_tg, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Telegram upload curl error: {proc.stderr}")
+
+    try:
+        res = json.loads(proc.stdout)
+    except Exception as e:
+        raise RuntimeError(f"Telegram parse error: {proc.stdout[:200]}") from e
+
+    if not res.get("ok"):
+        raise RuntimeError(f"Telegram API error: {res.get('description', res)}")
+
+    result_data = res.get("result", {})
+    message_id = result_data.get("message_id")
+    video_info = result_data.get("video", {})
+    file_id = video_info.get("file_id")
+
+    # Clean channel ID for direct t.me link
+    clean_chan_id = clean_chat
+    if clean_chan_id.startswith("-100"):
+        clean_chan_id = clean_chan_id[4:]
+    elif clean_chan_id.startswith("-"):
+        clean_chan_id = clean_chan_id[1:]
+
+    post_url = f"https://t.me/c/{clean_chan_id}/{message_id}" if message_id else ""
+    print(f"[SUCCESS] Uploaded to Telegram! Msg ID: {message_id} | Link: {post_url}")
+
+    return {
+        "message_id": message_id,
+        "file_id": file_id,
+        "channel_id": clean_chat,
+        "post_url": post_url
+    }
 
 
 def main():
-    abyss_api_key = os.getenv("ABYSS_API_KEY")
-    if not abyss_api_key:
-        print("ERROR: ABYSS_API_KEY environment variable is required.")
-        sys.exit(1)
+    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip()
+    tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
 
     meta_b64 = os.getenv("ITEM_META_B64", "").strip()
     if meta_b64:
@@ -97,9 +145,47 @@ def main():
         print("ERROR: No input provided.")
         sys.exit(1)
 
-    result = upload_to_abyss(direct_url, output_name, abyss_api_key)
-    result.update(item_data)
+    temp_file = None
+    result = {
+        "success": True,
+        "title": item_data.get("title"),
+        "episode": item_data.get("episode")
+    }
 
+    try:
+        # Step 1: Download file once
+        temp_file = download_stream(direct_url, output_name)
+        file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
+        result["size_mb"] = round(file_size_mb, 2)
+        safe_name = os.path.basename(temp_file).replace("temp_", "")
+
+        # Step 2: Upload to Abyss if requested
+        if upload_target in ("both", "abyss"):
+            if abyss_api_key:
+                abyss_res = upload_to_abyss(temp_file, safe_name, abyss_api_key)
+                result.update(abyss_res)
+            else:
+                print("[WARN] ABYSS_API_KEY not configured. Skipping Abyss.")
+
+        # Step 3: Upload to Telegram if requested
+        if upload_target in ("both", "telegram"):
+            if tg_bot_token and tg_chat_id:
+                ep_title = item_data.get("title", "Anime")
+                ep_num = item_data.get("episode", 1)
+                caption = f"🎬 {ep_title} - Episode {ep_num}"
+                tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption)
+                result["telegram"] = tg_res
+            else:
+                print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
+
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
+
+    result.update(item_data)
     out_dir = "artifacts"
     os.makedirs(out_dir, exist_ok=True)
     safe_base = re.sub(r'[^a-zA-Z0-9_\-]', '_', output_name)
