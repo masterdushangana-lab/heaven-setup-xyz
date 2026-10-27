@@ -12,6 +12,8 @@ jobs:
   bulk_delete:
     name: Wipeout All Abyss Videos
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check Confirmation
         run: |
@@ -43,8 +45,8 @@ jobs:
 
       - name: Commit Updated History
         run: |
-          git config --global user.name "Abyss-Wipeout-Bot"
-          git config --global user.email "bot@heaven.local"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add uploaded_episodes.json
           if git diff --staged --quiet; then
             echo "[i] No history changes to commit."

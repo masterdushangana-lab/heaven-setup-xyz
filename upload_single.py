@@ -8,6 +8,7 @@ Compatible with standard Linux curl (ubuntu-latest).
 import os
 import re
 import sys
+import time
 import json
 import base64
 import subprocess
@@ -128,7 +129,11 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_token: str, chat_id: 
                 wait_sec = int(retry_after_match.group(1)) + 1
 
             if wait_sec is not None:
-                print(f"[!] Telegram Flood/Rate Limit hit: {err_desc}. Sleeping for {wait_sec}s before retry ({attempt}/{max_retries})...")
+                # If Telegram asks to wait more than 60 seconds (FloodWait), do NOT stall GitHub Runner for an hour!
+                if wait_sec > 60:
+                    print(f"[!] Telegram Flood/Rate Limit is too long ({wait_sec}s). Skipping Telegram upload for this episode to prevent runner timeout.")
+                    return None
+                print(f"[!] Telegram Rate Limit hit: {err_desc}. Sleeping for {wait_sec}s before retry ({attempt}/{max_retries})...")
                 time.sleep(wait_sec)
                 continue
 
@@ -202,21 +207,36 @@ def main():
         # Step 2: Upload to Abyss if requested
         if upload_target in ("both", "abyss"):
             if abyss_api_key:
-                abyss_res = upload_to_abyss(temp_file, safe_name, abyss_api_key)
-                result.update(abyss_res)
+                try:
+                    abyss_res = upload_to_abyss(temp_file, safe_name, abyss_api_key)
+                    result.update(abyss_res)
+                except Exception as ab_err:
+                    print(f"[!] Abyss upload error: {ab_err}")
+                    if upload_target == "abyss":
+                        raise
             else:
                 print("[WARN] ABYSS_API_KEY not configured. Skipping Abyss.")
 
         # Step 3: Upload to Telegram if requested
         if upload_target in ("both", "telegram"):
             if tg_bot_token and tg_chat_id:
-                ep_title = item_data.get("title", "Anime")
-                ep_num = item_data.get("episode", 1)
-                caption = f"🎬 {ep_title} - Episode {ep_num}"
-                tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption, local_api_url=local_api_url)
-                result["telegram"] = tg_res
+                try:
+                    ep_title = item_data.get("title", "Anime")
+                    ep_num = item_data.get("episode", 1)
+                    caption = f"🎬 {ep_title} - Episode {ep_num}"
+                    tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption, local_api_url=local_api_url)
+                    if tg_res:
+                        result["telegram"] = tg_res
+                except Exception as tg_err:
+                    print(f"[!] Telegram upload error: {tg_err}")
+                    if upload_target == "telegram":
+                        raise
             else:
                 print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
+
+        # If upload target was 'both' and at least one succeeded, do not crash!
+        if upload_target == "both" and not (result.get("slug") or result.get("telegram")):
+            raise RuntimeError("Both Abyss and Telegram uploads failed.")
 
     finally:
         if temp_file and os.path.exists(temp_file):
