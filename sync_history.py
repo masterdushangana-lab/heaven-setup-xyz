@@ -120,7 +120,15 @@ def main():
                             history[primary_key]["mal_id"] = mal_id
 
                         rank = data.get("new_php_rank")
-                        computed_ts = int(time.time()) - (int(rank) if rank is not None else 0)
+                        # If episode comes from AnimeHeaven new.php, it has new_php_rank (0, 1, 2...).
+                        # Manual backlog uploads do NOT have new_php_rank -> assigned base timestamp (1000000000)
+                        # so that Manual uploads ALWAYS stay at the bottom of the map!
+                        # When a fresh episode for that anime drops on new.php later, it gets modern time.time() and jumps to the top!
+                        if rank is not None:
+                            computed_ts = int(time.time()) - int(rank)
+                        else:
+                            # Manual backlog entry timestamp (historical base: Year 2001)
+                            computed_ts = 1000000000 + int(ep_num if ep_num.isdigit() else 0)
 
                         ep_record = history[primary_key]["episodes"].get(ep_num, {})
                         if data.get("slug"):
