@@ -37,9 +37,10 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
 
     try:
         if temp_sub and os.path.exists(temp_sub) and os.path.getsize(temp_sub) > 100:
-            print("[*] Burning subtitles into video with high-speed H.264 animation tuning (<500MB target)...")
+            print("[*] Burning English subtitles into video with high-speed H.264 animation tuning (<500MB target)...")
             cmd_burn = [
                 "ffmpeg", "-y",
+                "-allowed_segment_extensions", "ALL",
                 "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                 "-i", stream_url,
                 "-vf", f"subtitles={temp_sub}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'",
@@ -58,6 +59,7 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 # Stream copy fallback
                 subprocess.run([
                     "ffmpeg", "-y",
+                    "-allowed_segment_extensions", "ALL",
                     "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                     "-i", stream_url,
                     "-c", "copy",
@@ -69,6 +71,7 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
             if ".m3u8" in stream_url:
                 subprocess.run([
                     "ffmpeg", "-y",
+                    "-allowed_segment_extensions", "ALL",
                     "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                     "-i", stream_url,
                     "-c", "copy",

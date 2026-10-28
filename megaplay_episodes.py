@@ -174,19 +174,22 @@ def resolve_megaplay_direct_mal(session, mal_id: int, ep_num: int) -> Optional[d
         if not m3u8_url:
             return None
 
-        # Extract Subtitles
+        # Extract Subtitles (Strictly English only)
         subs = []
         for t in src_data.get("tracks", []):
             if t.get("kind") in ("captions", "subtitles") and t.get("file"):
-                subs.append({
-                    "lang": t.get("label", "Unknown"),
-                    "url": t.get("file"),
-                    "default": bool(t.get("default"))
-                })
+                label = t.get("label", "").lower()
+                lang = t.get("language", "").lower()
+                if "english" in label or label.startswith("eng") or lang.startswith("en"):
+                    subs.append({
+                        "lang": t.get("label", "English"),
+                        "url": t.get("file"),
+                        "default": bool(t.get("default"))
+                    })
 
         primary_sub = None
         for s in subs:
-            if "eng" in s["lang"].lower() or s.get("default"):
+            if s.get("default"):
                 primary_sub = s["url"]
                 break
         if not primary_sub and subs:
