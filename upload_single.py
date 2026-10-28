@@ -41,6 +41,8 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
             cmd_burn = [
                 "ffmpeg", "-y",
                 "-allowed_segment_extensions", "ALL",
+                "-allowed_extensions", "ALL",
+                "-extension_picky", "0",
                 "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                 "-i", stream_url,
                 "-vf", f"subtitles={temp_sub}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'",
@@ -60,6 +62,8 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 subprocess.run([
                     "ffmpeg", "-y",
                     "-allowed_segment_extensions", "ALL",
+                    "-allowed_extensions", "ALL",
+                    "-extension_picky", "0",
                     "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                     "-i", stream_url,
                     "-c", "copy",
@@ -72,6 +76,8 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 subprocess.run([
                     "ffmpeg", "-y",
                     "-allowed_segment_extensions", "ALL",
+                    "-allowed_extensions", "ALL",
+                    "-extension_picky", "0",
                     "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                     "-i", stream_url,
                     "-c", "copy",
