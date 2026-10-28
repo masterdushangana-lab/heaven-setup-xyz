@@ -1,0 +1,210 @@
+name: Anikoto Manual Ingestion & Abyss Upload (MAL + Encrypted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_mal_id:
+        description: 'Mandatory MAL ID (e.g. 58567 for Solo Leveling S2, 41467 for Bleach)'
+        required: true
+        type: string
+      episode_range:
+        description: 'Episode Range (e.g. 1, 1-12, 1-5,10-15, or all)'
+        required: false
+        default: 'all'
+        type: string
+      target_quality:
+        description: 'Target Quality Resolution'
+        required: false
+        default: '1080p'
+        type: choice
+        options:
+          - '1080p'
+          - '720p'
+          - '360p'
+      upload_target:
+        description: 'Where to upload: both, abyss, or telegram'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - abyss
+          - telegram
+
+concurrency:
+  group: anikoto-manual-pipeline
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Resolve Episodes from Anikoto
+    runs-on: ubuntu-latest
+    outputs:
+      has_items: ${{ steps.detect_step.outputs.has_items }}
+      matrix: ${{ steps.detect_step.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install curl_cffi cryptography
+
+      - name: Resolve Anikoto episodes
+        id: detect_step
+        env:
+          TARGET_MAL_ID: ${{ inputs.target_mal_id }}
+          EPISODE_RANGE: ${{ inputs.episode_range }}
+          TARGET_QUALITY: ${{ inputs.target_quality || '1080p' }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+        run: |
+          python anikoto_episodes.py
+
+  upload:
+    name: Upload EP
+    needs: detect
+    if: needs.detect.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        item: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
+        run: |
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            echo "[*] Launching Local Telegram Bot API server container..."
+            mkdir -p /tmp/tg-bot-api-data
+            docker run -d \
+              --name tg-local-api \
+              -p 8081:8081 \
+              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
+              -e TELEGRAM_API_ID="${TG_API_ID}" \
+              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
+              aiogram/telegram-bot-api:latest \
+              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
+            
+            for i in {1..30}; do
+              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
+                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
+                break
+              fi
+              sleep 1
+            done
+          else
+            echo "[WARN] TELEGRAM_API_ID or TELEGRAM_API_HASH not found in Secrets. Local bot API skipped."
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Upload Episode
+        env:
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+          ITEM_META_B64: ${{ matrix.item.meta_b64 }}
+        run: |
+          python upload_single.py
+
+      - name: Stop Local Telegram Bot API Server
+        if: always()
+        run: |
+          docker stop tg-local-api 2>/dev/null || true
+          docker rm tg-local-api 2>/dev/null || true
+
+      - name: Save Result Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.item.key }}
+          path: artifacts/
+          retention-days: 1
+
+  sync:
+    name: Sync MAL Tree & Encrypt History
+    needs: upload
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+        continue-on-error: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography
+        run: pip install cryptography
+
+      - name: Sync history & Commit
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAX_RETRIES=5
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "[*] Syncing history and pushing to main (Attempt $i/$MAX_RETRIES)..."
+            
+            git fetch origin main
+            git reset --hard origin/main
+
+            python sync_history.py downloaded_artifacts
+
+            git add uploaded_episodes.json
+
+            if git diff --staged --quiet; then
+              echo "[i] No history changes to commit."
+              SUCCESS=true
+              break
+            fi
+
+            git commit -m "Auto: Synced & Encrypted Anikoto uploaded episodes history"
+
+            if git push origin main; then
+              echo "[SUCCESS] Pushed updated history to origin/main successfully!"
+              SUCCESS=true
+              break
+            fi
+
+            echo "[WARN] Push rejected due to concurrent remote changes. Retrying in 3s..."
+            sleep 3
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "[ERROR] Failed to push history to GitHub after $MAX_RETRIES attempts."
+            exit 1
+          fi

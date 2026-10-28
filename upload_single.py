@@ -1,6 +1,6 @@
 """
 Single Episode Direct Uploader to Abyss.to and Telegram
-Downloads using verified AnimeHeaven Referer.
+Supports both AnimeHeaven and Anikoto (Kwik) sources with dynamic Referers.
 Uploads to Abyss.to and/or Private Telegram Channel without re-encoding.
 Compatible with standard Linux curl (ubuntu-latest).
 Supports Multi-Bot Pool and Multi-Channel Sharding.
@@ -20,24 +20,25 @@ from pathlib import Path
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
-def download_stream(direct_url: str, output_name: str) -> str:
+def download_stream(direct_url: str, output_name: str, referer: str = "https://animeheaven.me/") -> str:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
 
     temp_file = f"temp_{safe_name}"
     print(f"[*] Downloading source stream: {direct_url}")
+    print(f"[*] Using Referer: {referer}")
     cmd_dl = [
         "curl", "-sSL",
         "-H", f"User-Agent: {USER_AGENT}",
-        "-H", "Referer: https://animeheaven.me/",
+        "-H", f"Referer: {referer}",
         "--tcp-nodelay",
         "--connect-timeout", "30",
         "-o", temp_file,
         direct_url
     ]
     res = subprocess.run(cmd_dl)
-    if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 1000000:
+    if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 500000:
         raise RuntimeError(f"Download failed or incomplete file size (exit code {res.returncode})")
 
     file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
@@ -79,17 +80,14 @@ def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
 
 
 def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
-    # Parse and extract multi-bot tokens (supports token1,token2,token3...)
     all_tokens = [t.strip() for t in re.split(r'[,;|\s]+', bot_tokens_raw) if t.strip()]
     if not all_tokens:
         print("[!] No valid Telegram bot tokens provided. Skipping Telegram upload.")
         return None
 
-    # Parse multi-channels if provided (e.g. -100111,-100222,-100333)
     all_chats = [c.strip() for c in re.split(r'[,;|\s]+', chat_id) if c.strip()]
     clean_chat = random.choice(all_chats) if all_chats else chat_id.strip()
 
-    # Shuffle tokens so concurrent GitHub runners distribute evenly across available bots
     random.shuffle(all_tokens)
 
     base_api = local_api_url.rstrip("/") if local_api_url else "https://api.telegram.org"
@@ -130,18 +128,15 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat
             print(f"[!] Bot #{token_idx} error: {err_desc}")
             last_error = err_desc
 
-            # If rate limited, sleep the requested retry_after period before failover
             if "too many requests" in err_desc.lower() or "retry after" in err_desc.lower():
                 wait_sec = res.get("parameters", {}).get("retry_after", 15)
-                print(f"[⏳ RATE LIMIT] Telegram requested wait of {wait_sec}s. Sleeping before next bot...")
+                print(f"[ RATE LIMIT] Telegram requested wait of {wait_sec}s. Sleeping before next bot...")
                 time.sleep(wait_sec + 2)
                 continue
 
-            # If invalid token, try next bot
             if "unauthorized" in err_desc.lower():
                 continue
 
-            # Otherwise small sleep and try next bot
             time.sleep(2)
             continue
 
@@ -150,7 +145,6 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat
         video_info = result_data.get("video", {})
         file_id = video_info.get("file_id")
 
-        # Clean channel ID for direct t.me link
         clean_chan_id = clean_chat
         if clean_chan_id.startswith("-100"):
             clean_chan_id = clean_chan_id[4:]
@@ -186,13 +180,15 @@ def main():
     item_data = json.loads(base64.b64decode(meta_b64).decode("utf-8"))
     stream_url = item_data["stream_url"]
     output_name = item_data["filename"]
+    # Dynamic referer: uses kwik.cx for Anikoto, animeheaven.me for AnimeHeaven
+    referer = item_data.get("stream_referer") or ("https://kwik.cx/" if "owocdn" in stream_url or "kwik" in stream_url else "https://animeheaven.me/")
 
     temp_file = None
     result = {}
 
     try:
-        # Step 1: Download stream directly from AnimeHeaven
-        temp_file = download_stream(stream_url, output_name)
+        # Step 1: Download stream directly with proper referer
+        temp_file = download_stream(stream_url, output_name, referer=referer)
         safe_name = os.path.basename(temp_file).replace("temp_", "")
 
         # Step 2: Upload to Abyss if requested
@@ -225,7 +221,6 @@ def main():
             else:
                 print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
 
-        # If upload target was 'both' and at least one succeeded, do not crash!
         if upload_target == "both" and not (result.get("slug") or result.get("telegram")):
             raise RuntimeError("Both Abyss and Telegram uploads failed.")
 
