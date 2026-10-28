@@ -63,12 +63,11 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 "-i", stream_url,
                 "-vf", sub_filter,
                 "-c:v", "libx264",
-                "-preset", "faster",
-                "-crf", "25",
-                "-maxrate", "2000k",
-                "-bufsize", "4000k",
-                "-c:a", "aac",
-                "-b:a", "128k",
+                "-preset", "ultrafast",
+                "-b:v", "1600k",
+                "-maxrate", "1800k",
+                "-bufsize", "3600k",
+                "-c:a", "copy",
                 "-movflags", "+faststart",
                 temp_file
             ]
