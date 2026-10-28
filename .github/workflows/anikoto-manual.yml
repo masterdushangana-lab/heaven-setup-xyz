@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target_mal_id:
-        description: 'Mandatory MAL ID (e.g. 58567 for Solo Leveling S2, 41467 for Bleach)'
+        description: 'Mandatory MAL ID (e.g. 21 for One Piece, 58567 for Solo Leveling S2, 41467 for Bleach)'
         required: true
         type: string
       episode_range:
@@ -79,6 +79,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup FFmpeg (Remux support)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
         env:

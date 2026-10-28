@@ -1,32 +1,41 @@
 """
-Anikoto Manual Episode Resolver for ClixArena Ingestion Pipeline
+Anikoto & Megaplay Manual Episode Resolver for ClixArena Ingestion Pipeline
 Key Features:
-- Pure Python & curl_cffi Chrome impersonation (Zero Playwright / Zero Headless Browser).
-- Takes exact MAL ID, Episode / Episode Range (e.g. 1, 1-12, 1,3,5), and Quality (1080p / 720p / 360p).
-- Scrapes Official MAL Japanese/English titles.
-- Maps to Anikoto watch page and validates matching data-mal ID.
-- Resolves Nekostream mapper API & Kwik to produce Direct MP4 URLs (https://vault-XX.owocdn.top/mp4/...).
-- Deduplicates against uploaded_episodes.json (Target-aware: Abyss / Telegram / Both).
-- Outputs standard GitHub Actions Matrix JSON.
+- Direct MegaPlay Integration using exact codec:
+  * AES-256-CBC Decryption: key = 'i?LMTAx0Q6,:}50U', iv = "W0;27ToaUpl_P%'c"
+  * HMAC-SHA256 URL Signing: signingKey = 'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s'
+- Resolves master M3U8 + WebVTT Subtitle tracks.
+- Fallback to Kwik.cx Direct MP4 when available.
+- Target-aware deduplication against uploaded_episodes.json (Abyss / Telegram / Both).
 """
 
 import os
 import re
 import sys
 import json
+import time
+import hmac
+import hashlib
 import base64
 import urllib.request
 import urllib.parse
 from typing import Dict, List, Optional, Set
 from curl_cffi import requests
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 from mal_resolver import resolve_mal_metadata
 from mapping_crypto import decrypt_mapping
 
 BASE = "https://anikoto.cz"
+MEGAPLAY_BASE = "https://megaplay.buzz"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 STATE_FILE = "uploaded_episodes.json"
-DELETED_FILE = "deleted_episodes.json"
+
+# Megaplay Codec Keys (Compatible with e1-player v2.8)
+MEGAPLAY_AES_KEY = b'i?LMTAx0Q6,:}50U'.ljust(32, b'\0')[:32]
+MEGAPLAY_IV = b"W0;27ToaUpl_P%'c"
+MEGAPLAY_SIGNING_KEY = b'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s'
 
 
 def parse_episode_range(range_str: str) -> Optional[Set[int]]:
@@ -85,35 +94,7 @@ def is_already_uploaded(history: dict, primary_key: str, ep_num: int, upload_tar
     return False
 
 
-def unpack_dean_edwards(packed_js: str) -> str:
-    match = re.search(r"\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\.split\('\|'\)", packed_js)
-    if not match:
-        match = re.search(r'\}\("([\s\S]*?)",(\d+),(\d+),"([\s\S]*?)"\.split\("\|"\)', packed_js)
-    if not match:
-        return ""
-
-    p, a, c, k = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4).split('|')
-
-    def base_n(num, base):
-        chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        if num < base:
-            return chars[num]
-        return base_n(num // base, base) + chars[num % base]
-
-    lookup = {}
-    for i in range(c):
-        token = base_n(i, a)
-        lookup[token] = k[i] if (i < len(k) and k[i]) else token
-
-    def replace_word(m):
-        w = m.group(0)
-        return lookup.get(w, w)
-
-    return re.sub(r'\b\w+\b', replace_word, p)
-
-
 def get_mal_anime_titles(mal_id: int):
-    """Scrapes official Japanese/Romaji and English titles directly from MyAnimeList page."""
     url = f"https://myanimelist.net/anime/{mal_id}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=12) as resp:
@@ -215,77 +196,160 @@ def find_anikoto_watch_page(session, target_mal_id: int, titles: list):
 
 
 def parse_episodes_metadata(ep_html: str):
-    pattern = r'<a[^>]*data-id="[^"]*"[^>]*data-num="([^"]+)"[^>]*data-slug="([^"]+)"[^>]*data-mal="([^"]+)"[^>]*data-timestamp="([^"]+)"'
     episodes = {}
-    for m in re.finditer(pattern, ep_html):
-        num_str, slug, mal_id, timestamp = m.group(1), m.group(2), m.group(3), m.group(4)
+    for m in re.finditer(r'<a\s+([^>]+)>', ep_html):
+        attrs = m.group(1)
+        num_m = re.search(r'data-num="([^"]+)"', attrs)
+        if not num_m:
+            continue
+        num_str = num_m.group(1)
         try:
             ep_num = float(num_str) if '.' in num_str else int(num_str)
-            episodes[ep_num] = {
-                "num": ep_num,
-                "slug": slug,
-                "mal_id": mal_id,
-                "timestamp": timestamp
-            }
         except ValueError:
             continue
+
+        slug_m = re.search(r'data-slug="([^"]+)"', attrs)
+        mal_m = re.search(r'data-mal="([^"]+)"', attrs)
+        ts_m = re.search(r'data-timestamp="([^"]+)"', attrs)
+        ids_m = re.search(r'data-ids="([^"]+)"', attrs)
+
+        episodes[ep_num] = {
+            "num": ep_num,
+            "slug": slug_m.group(1) if slug_m else str(ep_num),
+            "mal_id": mal_m.group(1) if mal_m else "",
+            "timestamp": ts_m.group(1) if ts_m else "",
+            "data_ids": ids_m.group(1) if ids_m else ""
+        }
     return episodes
 
 
-def resolve_episode_direct_mp4(session, ep_meta: dict, quality="1080p", audio="sub"):
+def decrypt_megaplay_codec(enc_b64: str) -> Optional[str]:
+    """Decrypts Megaplay enc blob using official e1-player v2.8 AES-CBC keys."""
+    pad = len(enc_b64) % 4
+    if pad:
+        enc_b64 += "=" * (4 - pad)
+    try:
+        enc_bytes = base64.urlsafe_b64decode(enc_b64)
+        cipher = Cipher(algorithms.AES(MEGAPLAY_AES_KEY), modes.CBC(MEGAPLAY_IV), backend=default_backend())
+        decryptor = cipher.decryptor()
+        dec = decryptor.update(enc_bytes) + decryptor.finalize()
+        pad_len = dec[-1]
+        if 1 <= pad_len <= 16:
+            dec = dec[:-pad_len]
+        return dec.decode("utf-8")
+    except Exception:
+        return None
+
+
+def sign_megaplay_url(file_url: str) -> str:
+    """Signs master M3U8 endpoint using HMAC-SHA256."""
+    path_m = re.search(r'/([a-f0-9]{32})/([a-f0-9]{32})/', file_url, re.IGNORECASE)
+    if path_m and "token=" not in file_url:
+        payload = f"{int(time.time()) + 90}|{path_m.group(1).lower()}/{path_m.group(2).lower()}".encode("utf-8")
+        sig = hmac.new(MEGAPLAY_SIGNING_KEY, payload, hashlib.sha256).digest()
+        token = f"{base64.urlsafe_b64encode(payload).decode().rstrip('=')}.{base64.urlsafe_b64encode(sig).decode().rstrip('=')}"
+        sep = "&" if "?" in file_url else "?"
+        return f"{file_url}{sep}token={token}"
+    return file_url
+
+
+def resolve_megaplay_source(session, anikoto_data_ids: str, mal_id: int, ep_num: int) -> Optional[dict]:
+    """Resolves signed Master M3U8 and WebVTT Subtitle tracks via Megaplay."""
+    # Path A: Try directly via /stream/ani/{mal_id}/{ep_num}/sub
+    embed_urls = [
+        f"{MEGAPLAY_BASE}/stream/ani/{mal_id}/{ep_num}/sub"
+    ]
+
+    # Path B: Query server list for embed URL
+    if anikoto_data_ids:
+        try:
+            res_sv = session.get(f"{BASE}/ajax/server/list?servers={anikoto_data_ids}", headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE}/"}, timeout=10)
+            sv_html = res_sv.json().get("result", "")
+            for sv_m in re.finditer(r'<li[^>]*data-link-id="([^"]+)"[^>]*>(.*?)</li>', sv_html):
+                link_id = sv_m.group(1)
+                res_embed = session.get(f"{BASE}/ajax/server?get={link_id}", headers={"X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE}/"}, timeout=10)
+                url = res_embed.json().get("result", {}).get("url")
+                if url and "megaplay.buzz" in url:
+                    embed_urls.append(url)
+        except Exception:
+            pass
+
+    for embed_url in embed_urls:
+        try:
+            r_player = session.get(embed_url, headers={"Referer": f"{MEGAPLAY_BASE}/api"}, timeout=10)
+            m_fid = re.search(r'<title>File (\d+)', r_player.text)
+            if not m_fid:
+                continue
+            fid = m_fid.group(1)
+
+            r_src = session.get(f"{MEGAPLAY_BASE}/stream/getSources?id={fid}", headers={"Referer": embed_url, "X-Requested-With": "XMLHttpRequest"}, timeout=10)
+            src_data = r_src.json()
+
+            m3u8_url = None
+            if src_data.get("enc"):
+                dec_json = decrypt_megaplay_codec(src_data["enc"])
+                if dec_json:
+                    parsed = json.loads(dec_json)
+                    raw_file = parsed[0]["file"] if isinstance(parsed, list) else parsed.get("file")
+                    if raw_file:
+                        m3u8_url = sign_megaplay_url(raw_file)
+
+            if not m3u8_url and src_data.get("sources"):
+                raw_file = src_data["sources"][0]["file"] if isinstance(src_data["sources"], list) else src_data["sources"].get("file")
+                if raw_file:
+                    m3u8_url = sign_megaplay_url(raw_file)
+
+            if m3u8_url:
+                # Extract Subtitle tracks
+                subs = []
+                for t in src_data.get("tracks", []):
+                    if t.get("kind") in ("captions", "subtitles") and t.get("file"):
+                        subs.append({
+                            "lang": t.get("label", "Unknown"),
+                            "url": t.get("file"),
+                            "default": bool(t.get("default"))
+                        })
+
+                # Prefer English subtitle as primary burn-in track
+                primary_sub = None
+                for s in subs:
+                    if "eng" in s["lang"].lower() or s.get("default"):
+                        primary_sub = s["url"]
+                        break
+                if not primary_sub and subs:
+                    primary_sub = subs[0]["url"]
+
+                return {
+                    "m3u8": m3u8_url,
+                    "referer": f"{MEGAPLAY_BASE}/",
+                    "subtitle_url": primary_sub,
+                    "all_subtitles": subs
+                }
+        except Exception:
+            continue
+
+    return None
+
+
+def resolve_episode_stream(session, ep_meta: dict, quality="1080p"):
     mal_id = ep_meta["mal_id"]
-    slug = ep_meta["slug"]
-    timestamp = ep_meta["timestamp"]
+    data_ids = ep_meta["data_ids"]
     ep_num = ep_meta["num"]
-
-    mapper_url = f"https://mapper.nekostream.site/api/mal/{mal_id}/{slug}/{timestamp}"
-    mapper_res = session.get(mapper_url, headers={"Referer": f"{BASE}/"})
-    data = mapper_res.json()
-
-    kiwi_data = data.get("Kiwi", {}).get(audio, {}).get("download", {})
-    pahe_url = kiwi_data.get(quality) or kiwi_data.get("1080p") or kiwi_data.get("720p") or kiwi_data.get("360p")
-    if not pahe_url:
-        raise ValueError(f"No stream found for Episode {ep_num} ({quality})")
-
-    path_id = pahe_url.rstrip("/").split("/")[-1]
-    test_url = f"https://testpahe.nekostream.site/{path_id}"
-    redirect_res = session.get(test_url, headers={"Referer": pahe_url}, allow_redirects=False)
-    kwik_url = redirect_res.headers.get("Location")
-    if not kwik_url:
-        raise ValueError(f"Could not get Kwik redirect for Ep {ep_num}")
-
-    kwik_embed_url = kwik_url.replace("/f/", "/e/")
-    kwik_res = session.get(kwik_embed_url, headers={"Referer": "https://kwik.cx/"})
-
-    scripts = re.findall(r"<script[^>]*>([\s\S]*?)<\/script>", kwik_res.text)
-    stream_m3u8_url = None
-
-    for script in scripts:
-        if "eval(function" in script:
-            for b in script.split("eval(function")[1:]:
-                unpacked = unpack_dean_edwards("eval(function" + b)
-                m_src = re.search(r"source\s*=\s*\\?['\"]([^'\"]+\.m3u8[^'\"]*)\\?['\"]", unpacked)
-                if m_src:
-                    stream_m3u8_url = m_src.group(1).replace("\\", "").strip()
-                    break
-        if stream_m3u8_url:
-            break
-
-    if not stream_m3u8_url:
-        raise ValueError(f"Failed to unpack Kwik player stream for Ep {ep_num}")
-
-    clean_base = stream_m3u8_url.replace("/stream/", "/mp4/").replace("/uwu.m3u8", "")
     filename = f"MAL_{mal_id}_EP_{ep_num}_{quality}.mp4"
-    direct_mp4_url = f"{clean_base}?file={filename}"
 
-    # Verify head
-    head_res = session.head(direct_mp4_url, headers={"Referer": "https://kwik.cx/"})
-    file_size_mb = 0
-    if head_res.status_code in (200, 206):
-        content_len = int(head_res.headers.get("Content-Length", 0))
-        file_size_mb = round(content_len / (1024 * 1024), 2)
+    # Priority 1: Megaplay Buzz Stream + Subtitles
+    print(f"[*] Querying Megaplay Stream & Subtitles for Episode {ep_num}...")
+    mega_info = resolve_megaplay_source(session, data_ids, mal_id, int(ep_num))
+    if mega_info:
+        return {
+            "stream_url": mega_info["m3u8"],
+            "stream_referer": mega_info["referer"],
+            "subtitle_url": mega_info["subtitle_url"],
+            "filename": filename,
+            "type": "hls_with_sub"
+        }
 
-    return direct_mp4_url, file_size_mb, filename
+    raise ValueError(f"Stream resolution failed for Episode {ep_num}")
 
 
 def main():
@@ -294,7 +358,6 @@ def main():
     target_quality = os.getenv("TARGET_QUALITY", "1080p").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
     mapping_password = os.getenv("MAPPING_PASSWORD", "").strip()
-    mal_client_id = os.getenv("MAL_CLIENT_ID", "").strip()
 
     if not target_mal_id_str or not target_mal_id_str.isdigit():
         print("[ERROR] TARGET_MAL_ID is mandatory for Anikoto manual downloader.", file=sys.stderr)
@@ -302,22 +365,19 @@ def main():
 
     mal_id = int(target_mal_id_str)
     print("=" * 70)
-    print(f"ANIKOTO MANUAL EPISODE DETECTOR & DISPATCHER")
+    print(f"ANIKOTO & MEGAPLAY HIGH-PERFORMANCE INGESTION ENGINE")
     print(f"MAL ID: {mal_id} | Range: {episode_range_str} | Quality: {target_quality} | Target: {upload_target}")
     print("=" * 70)
 
-    # 1. Resolve Titles
     main_title, en_title = get_mal_anime_titles(mal_id)
     display_title = en_title or main_title or f"Anime {mal_id}"
     print(f"[+] MAL Anime: '{main_title}' (English: '{en_title}')")
 
-    # 2. Match Anikoto
     session = requests.Session(impersonate="chrome120")
     anime_id, watch_url, ep_html = find_anikoto_watch_page(session, mal_id, [en_title, main_title])
 
-    # 3. Parse Episodes
     all_episodes = parse_episodes_metadata(ep_html)
-    print(f"[+] Total Episodes Available on Anikoto: {len(all_episodes)}")
+    print(f"[+] Total Episodes Available: {len(all_episodes)}")
 
     allowed_range = parse_episode_range(episode_range_str)
     history = load_history(mapping_password)
@@ -333,10 +393,12 @@ def main():
             print(f"[-] Episode {ep_num} is already uploaded to {upload_target}. Skipping (dedup).")
             continue
 
-        print(f"[*] Resolving direct MP4 for Episode {ep_num} ({target_quality})...")
+        print(f"[*] Resolving stream for Episode {ep_num}...")
         try:
-            mp4_url, size_mb, filename = resolve_episode_direct_mp4(session, all_episodes[ep_num], quality=target_quality)
-            print(f"[+] Found MP4: {filename} ({size_mb} MB)")
+            stream_info = resolve_episode_stream(session, all_episodes[ep_num], quality=target_quality)
+            print(f"[+] Stream Resolved: {stream_info['filename']}")
+            if stream_info.get("subtitle_url"):
+                print(f"    Subtitle Track: {stream_info['subtitle_url']}")
 
             item_payload = {
                 "key": f"anikoto_{mal_id}_ep{ep_num}",
@@ -344,12 +406,13 @@ def main():
                 "anime_url": watch_url,
                 "title": display_title,
                 "episode": int(ep_num),
-                "stream_url": mp4_url,
-                "stream_referer": "https://kwik.cx/",
-                "filename": filename,
+                "stream_url": stream_info["stream_url"],
+                "stream_referer": stream_info["stream_referer"],
+                "subtitle_url": stream_info.get("subtitle_url"),
+                "stream_type": stream_info["type"],
+                "filename": stream_info["filename"],
                 "quality": target_quality,
-                "size_mb": size_mb,
-                "provider": "anikoto",
+                "provider": "megaplay",
                 "mal_info": {
                     "mal_id": mal_id,
                     "title_english": en_title or main_title,
@@ -366,12 +429,11 @@ def main():
         except Exception as err:
             print(f"[X] Episode {ep_num} error: {err}")
 
-    # Output GitHub Actions Environment variables
     github_output = os.getenv("GITHUB_OUTPUT")
     has_items = "true" if len(matrix_items) > 0 else "false"
 
     print("\n" + "=" * 70)
-    print(f"ANIKOTO RESOLUTION SUMMARY: {len(matrix_items)} Episodes queued for upload.")
+    print(f"RESOLUTION SUMMARY: {len(matrix_items)} Episodes queued for upload.")
     print("=" * 70)
 
     if github_output:
