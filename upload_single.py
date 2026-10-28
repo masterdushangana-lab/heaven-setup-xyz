@@ -3,6 +3,7 @@ Single Episode Direct Uploader to Abyss.to and Telegram
 Downloads using verified AnimeHeaven Referer.
 Uploads to Abyss.to and/or Private Telegram Channel without re-encoding.
 Compatible with standard Linux curl (ubuntu-latest).
+Supports Multi-Bot Pool and Multi-Channel Sharding.
 """
 
 import os
@@ -84,18 +85,21 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat
         print("[!] No valid Telegram bot tokens provided. Skipping Telegram upload.")
         return None
 
+    # Parse multi-channels if provided (e.g. -100111,-100222,-100333)
+    all_chats = [c.strip() for c in re.split(r'[,;|\s]+', chat_id) if c.strip()]
+    clean_chat = random.choice(all_chats) if all_chats else chat_id.strip()
+
     # Shuffle tokens so concurrent GitHub runners distribute evenly across available bots
     random.shuffle(all_tokens)
-    clean_chat = chat_id.strip()
 
     base_api = local_api_url.rstrip("/") if local_api_url else "https://api.telegram.org"
-    print(f"[*] Uploading to Telegram Channel ({clean_chat}): {safe_name} via {len(all_tokens)} Bot Token(s) Pool")
+    print(f"[*] Uploading to Telegram Channel ({clean_chat}): {safe_name} via pool of {len(all_tokens)} Bots")
 
     last_error = None
     for token_idx, bot_token in enumerate(all_tokens, 1):
         clean_token = bot_token.strip()
         endpoint = f"{base_api}/bot{clean_token}/sendVideo"
-        print(f"[*] Dispatching via Bot #{token_idx}...")
+        print(f"[*] Dispatching via Bot #{token_idx} to {clean_chat}...")
 
         cmd_tg = [
             "curl", "-sS",
@@ -126,9 +130,11 @@ def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat
             print(f"[!] Bot #{token_idx} error: {err_desc}")
             last_error = err_desc
 
-            # If this bot is rate limited or flood waited, immediately switch to NEXT BOT!
+            # If rate limited, sleep the requested retry_after period before failover
             if "too many requests" in err_desc.lower() or "retry after" in err_desc.lower():
-                print(f"[⚡ FAILOVER] Bot #{token_idx} is rate limited. Instantly switching to Next Bot in pool!")
+                wait_sec = res.get("parameters", {}).get("retry_after", 15)
+                print(f"[⏳ RATE LIMIT] Telegram requested wait of {wait_sec}s. Sleeping before next bot...")
+                time.sleep(wait_sec + 2)
                 continue
 
             # If invalid token, try next bot
@@ -169,34 +175,24 @@ def main():
     abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    local_api_url = os.getenv("TG_LOCAL_API_URL", "http://127.0.0.1:8081").strip()
+    tg_local_api_url = os.getenv("TG_LOCAL_API_URL", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
-
     meta_b64 = os.getenv("ITEM_META_B64", "").strip()
-    if meta_b64:
-        item_data = json.loads(base64.b64decode(meta_b64).decode("utf-8"))
-        direct_url = item_data["stream_url"]
-        output_name = item_data["filename"]
-    elif len(sys.argv) >= 3:
-        direct_url = sys.argv[1]
-        output_name = sys.argv[2]
-        item_data = json.loads(sys.argv[3]) if len(sys.argv) > 3 else {}
-    else:
-        print("ERROR: No input provided.")
+
+    if not meta_b64:
+        print("[ERROR] ITEM_META_B64 environment variable missing.", file=sys.stderr)
         sys.exit(1)
 
+    item_data = json.loads(base64.b64decode(meta_b64).decode("utf-8"))
+    stream_url = item_data["stream_url"]
+    output_name = item_data["filename"]
+
     temp_file = None
-    result = {
-        "success": True,
-        "title": item_data.get("title"),
-        "episode": item_data.get("episode")
-    }
+    result = {}
 
     try:
-        # Step 1: Download file once
-        temp_file = download_stream(direct_url, output_name)
-        file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
-        result["size_mb"] = round(file_size_mb, 2)
+        # Step 1: Download stream directly from AnimeHeaven
+        temp_file = download_stream(stream_url, output_name)
         safe_name = os.path.basename(temp_file).replace("temp_", "")
 
         # Step 2: Upload to Abyss if requested
@@ -219,7 +215,7 @@ def main():
                     ep_title = item_data.get("title", "Anime")
                     ep_num = item_data.get("episode", 1)
                     caption = f"🎬 {ep_title} - Episode {ep_num}"
-                    tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption, local_api_url=local_api_url)
+                    tg_res = upload_to_telegram(temp_file, safe_name, tg_bot_token, tg_chat_id, caption, local_api_url=tg_local_api_url)
                     if tg_res:
                         result["telegram"] = tg_res
                 except Exception as tg_err:

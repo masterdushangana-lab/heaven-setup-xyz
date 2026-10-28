@@ -31,9 +31,10 @@ def load_history(password: str) -> dict:
     return {}
 
 
-def auto_heal_history(history: dict, client_id: str) -> dict:
+def auto_heal_history(history: dict, client_id: str) -> tuple:
     """Scans and automatically resolves missing MAL IDs for existing entries in history."""
     healed = {}
+    healed_count = 0
     for key, data in history.items():
         current_mal = data.get("mal_id")
         title = data.get("title", "")
@@ -51,6 +52,7 @@ def auto_heal_history(history: dict, client_id: str) -> dict:
                 data["title_japanese"] = res.get("title_japanese") or jp_title
                 data["media_type"] = res.get("media_type") or data.get("media_type", "TV")
                 target_key = str(new_mal)
+                healed_count += 1
             else:
                 target_key = key
         else:
@@ -61,7 +63,7 @@ def auto_heal_history(history: dict, client_id: str) -> dict:
         else:
             healed[target_key] = data
 
-    return healed
+    return healed, healed_count
 
 
 def save_history(history: dict, password: str):
@@ -83,7 +85,7 @@ def main():
 
     history = load_history(password)
     # Auto-heal any existing N/A entries in history
-    history = auto_heal_history(history, mal_client_id)
+    history, healed_count = auto_heal_history(history, mal_client_id)
     updated_count = 0
 
     if os.path.exists(artifacts_dir):
@@ -149,8 +151,11 @@ def main():
                     except Exception as e:
                         print(f"[!] Error parsing {full_path}: {e}")
 
-    save_history(history, password)
-    print(f"[DONE] Synced {updated_count} episodes into {STATE_FILE}.")
+    if updated_count > 0 or healed_count > 0 or not os.path.exists(STATE_FILE):
+        save_history(history, password)
+        print(f"[DONE] Synced {updated_count} episodes (healed {healed_count}) into {STATE_FILE}.")
+    else:
+        print(f"[DONE] No new episodes or heals to save. {STATE_FILE} remains untouched.")
 
 
 if __name__ == "__main__":

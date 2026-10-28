@@ -25,7 +25,8 @@ jobs:
       - name: Checkout Code & History
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          ref: main
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -52,5 +53,6 @@ jobs:
             echo "[i] No history changes to commit."
           else
             git commit -m "Cleanup: Bulk deleted all Abyss videos from account & database"
+            git pull --rebase origin main || true
             git push origin main
           fi
