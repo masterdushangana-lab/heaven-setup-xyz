@@ -30,28 +30,42 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     print(f"[*] Referer: {referer}")
 
     temp_sub = None
+    temp_ass = None
     if subtitle_url:
         temp_sub = f"sub_{int(time.time())}.vtt"
+        temp_ass = f"sub_{int(time.time())}.ass"
         print(f"[*] Downloading WebVTT Subtitles: {subtitle_url}")
-        subprocess.run(["curl", "-sSL", "-H", f"User-Agent: {USER_AGENT}", "-o", temp_sub, subtitle_url])
+        subprocess.run([
+            "curl", "-sSL",
+            "-H", f"User-Agent: {USER_AGENT}",
+            "-H", f"Referer: {referer}",
+            "-H", "Origin: https://megaplay.buzz",
+            "-o", temp_sub,
+            subtitle_url
+        ])
+
+        if os.path.exists(temp_sub) and os.path.getsize(temp_sub) > 100:
+            # Convert VTT to ASS for 100% reliable FFmpeg hardsub burning
+            subprocess.run(["ffmpeg", "-y", "-i", temp_sub, temp_ass], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     try:
-        if temp_sub and os.path.exists(temp_sub) and os.path.getsize(temp_sub) > 100:
-            print("[*] Burning English subtitles into video with high-speed H.264 animation tuning (<500MB target)...")
+        burn_track = temp_ass if (temp_ass and os.path.exists(temp_ass) and os.path.getsize(temp_ass) > 100) else temp_sub
+        if burn_track and os.path.exists(burn_track) and os.path.getsize(burn_track) > 100:
+            print(f"[*] Burning English subtitles ({burn_track}) into video with ultra-fast multi-threaded H.264 (<500MB target)...")
+            sub_filter = f"ass={burn_track}" if burn_track.endswith(".ass") else f"subtitles={burn_track}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'"
             cmd_burn = [
                 "ffmpeg", "-y",
+                "-threads", "0",
                 "-allowed_segment_extensions", "ALL",
                 "-allowed_extensions", "ALL",
                 "-extension_picky", "0",
                 "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
                 "-i", stream_url,
-                "-vf", f"subtitles={temp_sub}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'",
+                "-vf", sub_filter,
                 "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "23",
-                "-tune", "animation",
-                "-c:a", "aac",
-                "-b:a", "128k",
+                "-preset", "ultrafast",
+                "-crf", "24",
+                "-c:a", "copy",
                 "-movflags", "+faststart",
                 temp_file
             ]
@@ -61,6 +75,7 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 # Stream copy fallback
                 subprocess.run([
                     "ffmpeg", "-y",
+                    "-threads", "0",
                     "-allowed_segment_extensions", "ALL",
                     "-allowed_extensions", "ALL",
                     "-extension_picky", "0",
@@ -93,11 +108,12 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 ])
 
     finally:
-        if temp_sub and os.path.exists(temp_sub):
-            try:
-                os.remove(temp_sub)
-            except Exception:
-                pass
+        for f_sub in (temp_sub, temp_ass):
+            if f_sub and os.path.exists(f_sub):
+                try:
+                    os.remove(f_sub)
+                except Exception:
+                    pass
 
     if not os.path.exists(temp_file) or os.path.getsize(temp_file) < 500000:
         raise RuntimeError(f"Processing failed or output file is empty: {output_name}")
