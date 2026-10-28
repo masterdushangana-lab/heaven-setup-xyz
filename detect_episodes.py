@@ -6,6 +6,7 @@ Features:
 - Mandatory MAL ID support for manual backlog uploads.
 - Permanent Blacklist support (deleted_episodes.json).
 - Preserves exact AnimeHeaven new.php discovery order.
+- Full fractional and versioned episode support (e.g. 7.5, 8.5, 12v2).
 """
 
 import os
@@ -26,7 +27,38 @@ STATE_FILE = "uploaded_episodes.json"
 DELETED_FILE = "deleted_episodes.json"
 
 
-def parse_episode_range(range_str: str) -> Optional[Set[int]]:
+def ep_sort_key(item: dict) -> tuple:
+    """Sort key supporting pure integers, floats (7.5, 8.5), and versioned episodes (12v2)."""
+    ep_s = str(item.get("episode", "")).strip().lower()
+    m = re.match(r"^(\d+(?:\.\d+)?)(.*)$", ep_s)
+    if m:
+        try:
+            return (float(m.group(1)), m.group(2))
+        except ValueError:
+            pass
+    return (999999.0, ep_s)
+
+
+def format_ep_filename(safe_title: str, ep) -> str:
+    """Safely formats filename without crashing on floats (7.5) or version strings (12v2)."""
+    ep_str = str(ep).strip()
+    if ep_str.isdigit():
+        return f"{safe_title}_EP{int(ep_str):02d}.mp4"
+    try:
+        f = float(ep_str)
+        int_part = int(f)
+        dec_part = ep_str.split(".")[1]
+        return f"{safe_title}_EP{int_part:02d}.{dec_part}.mp4"
+    except ValueError:
+        pass
+    m = re.match(r"^(\d+)(v\d+)$", ep_str, re.IGNORECASE)
+    if m:
+        return f"{safe_title}_EP{int(m.group(1)):02d}{m.group(2)}.mp4"
+    return f"{safe_title}_EP{ep_str}.mp4"
+
+
+def parse_episode_range(range_str: str) -> Optional[set]:
+    """Parses range strings supporting both integer ranges (1-12) and explicit fractional episodes (7.5, 8.5, 12v2)."""
     if not range_str or range_str.strip().lower() in ("all", "*", ""):
         return None
     allowed = set()
@@ -36,14 +68,39 @@ def parse_episode_range(range_str: str) -> Optional[Set[int]]:
             continue
         if "-" in p:
             parts = p.split("-")
-            if len(parts) == 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
-                start = int(parts[0].strip())
-                end = int(parts[1].strip())
-                for num in range(min(start, end), max(start, end) + 1):
-                    allowed.add(num)
-        elif p.isdigit():
-            allowed.add(int(p))
+            if len(parts) == 2:
+                try:
+                    s_val = float(parts[0].strip())
+                    e_val = float(parts[1].strip())
+                    allowed.add((min(s_val, e_val), max(s_val, e_val)))
+                except ValueError:
+                    pass
+        else:
+            allowed.add(p.lower())
+            try:
+                allowed.add(float(p))
+            except ValueError:
+                pass
     return allowed if allowed else None
+
+
+def is_ep_allowed(ep, allowed_eps: Optional[set]) -> bool:
+    """Checks whether an episode (int, float, string) is inside the allowed range filter."""
+    if allowed_eps is None:
+        return True
+    ep_str = str(ep).strip().lower()
+    if ep_str in allowed_eps:
+        return True
+    m = re.match(r"^(\d+(?:\.\d+)?)", ep_str)
+    if m:
+        num = float(m.group(1))
+        for item in allowed_eps:
+            if isinstance(item, tuple) and len(item) == 2:
+                if item[0] <= num <= item[1]:
+                    return True
+            elif isinstance(item, (int, float)) and abs(item - num) < 1e-5:
+                return True
+    return False
 
 
 def get_headers(referer: str = ANIMEHEAVEN_BASE, cookie: str = "") -> dict:
@@ -91,10 +148,10 @@ def load_deleted_episodes(password: str = "") -> dict:
     return {}
 
 
-def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> bool:
+def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num) -> bool:
     if not deleted_records:
         return False
-    ep_str = str(episode_num)
+    ep_str = str(episode_num).strip()
 
     if anime_id and anime_id in deleted_records:
         if ep_str in deleted_records[anime_id].get("episodes", []):
@@ -114,8 +171,8 @@ def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optiona
         m_aid = val.get("animeheaven_id")
         m_mal = val.get("mal_id")
         m_title = val.get("title")
-        eps = val.get("episodes", [])
-        if ep_str in eps or int(episode_num) in eps:
+        eps = [str(x).strip() for x in val.get("episodes", [])]
+        if ep_str in eps:
             if m_aid and m_aid == anime_id:
                 return True
             if mal_id and m_mal and int(m_mal) == int(mal_id):
@@ -126,9 +183,9 @@ def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optiona
     return False
 
 
-def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int) -> Optional[dict]:
+def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num) -> Optional[dict]:
     """Finds the existing episode record in history if available."""
-    ep_str = str(episode_num)
+    ep_str = str(episode_num).strip()
 
     # 1. By MAL ID
     if mal_id and str(mal_id) in history:
@@ -160,7 +217,7 @@ def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[i
     return None
 
 
-def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num: int, upload_target: str = "both") -> bool:
+def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num, upload_target: str = "both") -> bool:
     """
     Target-Aware Deduplication check:
     - If upload_target == 'abyss': Only checks if Abyss slug already exists.
@@ -187,15 +244,20 @@ def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], ani
 
 def get_recent_releases(limit: int = 40) -> List[dict]:
     content = http_get(f"{ANIMEHEAVEN_BASE}/new.php")
-    pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>(\d+)</div>[\s\S]*?<div class=['"]charttitlejp c['"]>([^<]*)</div>"""
+    # Matches integers, decimals like 7.5/8.5, and versioned episodes like 12v2 inside chartepm
+    pattern = r"""<div class=['"]chart bc1['"]>[\s\S]*?<a href=['"]anime\.php\?([^'"]+)['"]><img class=['"]coverimg['"][^>]+alt=['"]([^'"]+)['"][^>]*>[\s\S]*?<div class=['"]chartepm[^'"]*['"]>([^<]+)</div>[\s\S]*?<div class=['"]charttitlejp c['"]>([^<]*)</div>"""
 
     items = []
     seen = set()
     for match in re.finditer(pattern, content, re.IGNORECASE):
         anime_id = match.group(1).strip()
         raw_title = match.group(2)
-        ep_num = match.group(3)
+        raw_ep = match.group(3).strip()
         jp_title = match.group(4).strip() if match.group(4) else None
+
+        # Clean episode representation (supports 7.5, 8.5, 12v2)
+        clean_ep_m = re.search(r"(\d+(?:\.\d+)?(?:v\d+)?)", raw_ep, re.IGNORECASE)
+        ep_num = clean_ep_m.group(1) if clean_ep_m else raw_ep
 
         title = html.unescape(raw_title).strip()
         title = re.sub(r'\s+Banner$', '', title, flags=re.IGNORECASE)
@@ -209,37 +271,44 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
                 "anime_url": f"{ANIMEHEAVEN_BASE}/anime.php?{anime_id}",
                 "title": title,
                 "jp_title": jp_title if jp_title and jp_title != "-" else None,
-                "episode": int(ep_num)
+                "episode": ep_num
             })
             if len(items) >= limit:
                 break
     return items
 
 
-def find_episode_key_on_anime_page(anime_url: str, target_ep: int) -> Optional[str]:
+def find_episode_key_on_anime_page(anime_url: str, target_ep) -> Optional[str]:
+    target_norm = str(target_ep).strip().lower()
     html_content = http_get(anime_url)
     pattern = r"""gate[ah]\(\s*['"]([a-f0-9]{32})['"]\s*\)[^>]*>(.*?)</a>"""
     matches = list(re.finditer(pattern, html_content, re.DOTALL | re.IGNORECASE))
     for m in matches:
         k = m.group(1)
         inner = m.group(2)
-        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>(\d+)<', inner)
-        if w2 and int(w2.group(1)) == target_ep:
-            return k
+        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>([^<]+)<', inner)
+        if w2:
+            w2_val = w2.group(1).strip().lower()
+            if w2_val == target_norm:
+                return k
+            w2_clean_m = re.search(r"(\d+(?:\.\d+)?(?:v\d+)?)", w2_val)
+            if w2_clean_m and w2_clean_m.group(1) == target_norm:
+                return k
+
         clean = re.sub(r'<[^>]+>', ' ', inner)
         clean = re.sub(r'\s+', ' ', clean).strip()
-        ep_m = re.search(r'Episode\s+(\d+)', clean, re.IGNORECASE)
-        if ep_m and int(ep_m.group(1)) == target_ep:
+        ep_m = re.search(r'Episode\s*([0-9]+(?:\.[0-9]+)?(?:v[0-9]+)?)', clean, re.IGNORECASE)
+        if ep_m and ep_m.group(1).lower() == target_norm:
             return k
 
     raw_keys = re.findall(r'gate[ah]\(\s*[\'"]([a-f0-9]{32})[\'"]', html_content)
-    if raw_keys and target_ep == 1 and len(raw_keys) == 1:
+    if raw_keys and target_norm in ("1", "1.0", "01") and len(raw_keys) == 1:
         return raw_keys[0]
 
     return None
 
 
-def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] = None) -> List[dict]:
+def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[set] = None) -> List[dict]:
     if not anime_url.startswith("http"):
         anime_url = f"{ANIMEHEAVEN_BASE}/{anime_url}"
     anime_id = anime_url.split("?")[-1]
@@ -267,33 +336,37 @@ def get_all_episodes_from_anime(anime_url: str, allowed_eps: Optional[Set[int]] 
         k = m.group(1)
         inner = m.group(2)
 
-        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>(\d+)<', inner)
-        ep_num = int(w2.group(1)) if w2 else None
+        w2 = re.search(r'class=\s*[\'"][^\'"]*watch2[^\'"]*[\'"][^>]*>([^<]+)<', inner)
+        ep_val = None
+        if w2:
+            raw_w2 = w2.group(1).strip()
+            ep_m = re.search(r"(\d+(?:\.\d+)?(?:v\d+)?)", raw_w2, re.IGNORECASE)
+            ep_val = ep_m.group(1) if ep_m else raw_w2
 
-        if ep_num is None:
-            clean = re.sub(r'<[^>]+>', ' ', inner)
-            clean = re.sub(r'\s+', ' ', clean).strip()
-            ep_match = re.search(r'Episode\s+(\d+)', clean, re.IGNORECASE)
-            ep_num = int(ep_match.group(1)) if ep_match else None
+        if ep_val is None:
+            clean = re.sub(r'<[^>]+>', ' ', inner).strip()
+            ep_match = re.search(r'Episode\s*([0-9]+(?:\.[0-9]+)?(?:v[0-9]+)?)', clean, re.IGNORECASE)
+            if ep_match:
+                ep_val = ep_match.group(1)
 
-        if ep_num is None or ep_num in seen_eps:
+        if ep_val is None or ep_val in seen_eps:
             continue
-        if allowed_eps is not None and ep_num not in allowed_eps:
+        if not is_ep_allowed(ep_val, allowed_eps):
             continue
 
-        seen_eps.add(ep_num)
-        key = f"{anime_id}_ep{ep_num}"
+        seen_eps.add(ep_val)
+        key = f"{anime_id}_ep{ep_val}"
         items.append({
             "key": key,
             "anime_id": anime_id,
             "anime_url": anime_url,
             "title": anime_title,
             "jp_title": jp_title,
-            "episode": ep_num,
+            "episode": ep_val,
             "session_key": k
         })
 
-    items.sort(key=lambda x: x["episode"])
+    items.sort(key=ep_sort_key)
     return items
 
 
@@ -375,7 +448,7 @@ def main():
 
             direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
-            filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
+            filename = format_ep_filename(safe_title, item["episode"])
             item_payload = {
                 "key": item["key"],
                 "title": item["title"],
@@ -395,7 +468,7 @@ def main():
         print(f"[*] FRESH MODE: Found {len(releases)} recent items.", file=sys.stderr)
 
         for rank_idx, item in enumerate(releases):
-            if allowed_eps is not None and item["episode"] not in allowed_eps:
+            if not is_ep_allowed(item["episode"], allowed_eps):
                 continue
 
             mal_info = get_mal(item["title"], item.get("jp_title"))
@@ -417,7 +490,7 @@ def main():
 
             direct_url = resolve_direct_download_url(item["anime_url"], session_key)
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
-            filename = f"{safe_title}_EP{item['episode']:02d}.mp4"
+            filename = format_ep_filename(safe_title, item["episode"])
             item_payload = {
                 "key": item["key"],
                 "title": item["title"],

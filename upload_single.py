@@ -1,7 +1,7 @@
 """
 Single Episode Direct Uploader to Abyss.to and Telegram
 Supports:
-1. High-Speed Subtitle Burning (Hardsub) + Anime H.264 compression (<500MB).
+1. High-Speed Subtitle Burning (Hardsub) + High-Quality Anime H.264 compression (<500MB).
 2. Direct MP4 downloads via curl.
 Uploads directly to Abyss.to and Telegram without quality compromise.
 """
@@ -13,6 +13,7 @@ import time
 import json
 import base64
 import random
+import shutil
 import subprocess
 import urllib.parse
 from pathlib import Path
@@ -26,6 +27,7 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
         safe_name += '.mp4'
 
     temp_file = f"temp_{safe_name}"
+    raw_stream = f"raw_{safe_name}"
     print(f"[*] Processing Stream: {stream_url}")
     print(f"[*] Referer: {referer}")
 
@@ -51,33 +53,15 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     try:
         burn_track = temp_ass if (temp_ass and os.path.exists(temp_ass) and os.path.getsize(temp_ass) > 100) else temp_sub
         if burn_track and os.path.exists(burn_track) and os.path.getsize(burn_track) > 100:
-            print(f"[*] Burning English subtitles ({burn_track}) into video with ultra-fast multi-threaded H.264 (<500MB target)...")
-            sub_filter = f"ass={burn_track}" if burn_track.endswith(".ass") else f"subtitles={burn_track}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'"
-            cmd_burn = [
-                "ffmpeg", "-y",
-                "-threads", "0",
-                "-allowed_segment_extensions", "ALL",
-                "-allowed_extensions", "ALL",
-                "-extension_picky", "0",
-                "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
-                "-i", stream_url,
-                "-vf", sub_filter,
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-b:v", "1600k",
-                "-maxrate", "1800k",
-                "-bufsize", "3600k",
-                "-c:a", "copy",
-                "-movflags", "+faststart",
-                temp_file
-            ]
-            res = subprocess.run(cmd_burn)
-            if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 500000:
-                print("[!] Subtitle burning encountered an issue. Falling back to clean stream copy...")
-                # Stream copy fallback
+            print(f"[*] Decoupling Network: Pre-fetching stream locally for ultra-fast SSD encoding...")
+            if ".m3u8" in stream_url:
                 subprocess.run([
                     "ffmpeg", "-y",
-                    "-threads", "0",
+                    "-http_persistent", "1",
+                    "-http_multiple", "1",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
                     "-allowed_segment_extensions", "ALL",
                     "-allowed_extensions", "ALL",
                     "-extension_picky", "0",
@@ -85,13 +69,67 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                     "-i", stream_url,
                     "-c", "copy",
                     "-bsf:a", "aac_adtstoasc",
-                    temp_file
+                    raw_stream
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run([
+                    "curl", "-sSL",
+                    "-H", f"User-Agent: {USER_AGENT}",
+                    "-H", f"Referer: {referer}",
+                    "-o", raw_stream,
+                    stream_url
+                ])
+
+            source_input = raw_stream if (os.path.exists(raw_stream) and os.path.getsize(raw_stream) > 500000) else stream_url
+            headers_arg = [] if source_input == raw_stream else ["-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n"]
+
+            print(f"[*] Burning English subtitles ({burn_track}) into video with optimized ultrafast H.264 (<500MB target, zero quality loss)...")
+            sub_filter = f"ass={burn_track}" if burn_track.endswith(".ass") else f"subtitles={burn_track}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'"
+            cmd_burn = [
+                "ffmpeg", "-y",
+                "-threads", "0",
+            ] + headers_arg + [
+                "-i", source_input,
+                "-vf", sub_filter,
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "animation",
+                "-crf", "22",
+                "-maxrate", "2600k",
+                "-bufsize", "5200k",
+                "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                temp_file
+            ]
+            res = subprocess.run(cmd_burn)
+            if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 500000:
+                print("[!] Subtitle burning encountered an issue. Falling back to clean stream copy...")
+                if source_input == raw_stream and os.path.exists(raw_stream) and os.path.getsize(raw_stream) > 500000:
+                    shutil.copyfile(raw_stream, temp_file)
+                else:
+                    subprocess.run([
+                        "ffmpeg", "-y",
+                        "-threads", "0",
+                        "-allowed_segment_extensions", "ALL",
+                        "-allowed_extensions", "ALL",
+                        "-extension_picky", "0",
+                        "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
+                        "-i", stream_url,
+                        "-c", "copy",
+                        "-bsf:a", "aac_adtstoasc",
+                        temp_file
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print("[*] No subtitle burning needed. Direct stream muxing/downloading...")
             if ".m3u8" in stream_url:
                 subprocess.run([
                     "ffmpeg", "-y",
+                    "-http_persistent", "1",
+                    "-http_multiple", "1",
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "5",
                     "-allowed_segment_extensions", "ALL",
                     "-allowed_extensions", "ALL",
                     "-extension_picky", "0",
@@ -110,10 +148,10 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 ])
 
     finally:
-        for f_sub in (temp_sub, temp_ass):
-            if f_sub and os.path.exists(f_sub):
+        for f_clean in (temp_sub, temp_ass, raw_stream):
+            if f_clean and os.path.exists(f_clean):
                 try:
-                    os.remove(f_sub)
+                    os.remove(f_clean)
                 except Exception:
                     pass
 
