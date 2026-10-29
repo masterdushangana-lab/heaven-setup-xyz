@@ -3,7 +3,7 @@ Single Episode Direct Uploader to Abyss.to and Telegram
 Supports:
 1. High-Speed Subtitle Burning (Hardsub) + High-Quality Anime H.264 compression (<500MB).
 2. Direct MP4 downloads via curl.
-Uploads directly to Abyss.to and Telegram without quality compromise.
+Uploads directly to Abyss.to and Telegram without quality compromise or stream truncation.
 """
 
 import os
@@ -11,7 +11,9 @@ import re
 import sys
 import time
 import json
+import hmac
 import base64
+import hashlib
 import random
 import shutil
 import subprocess
@@ -19,12 +21,31 @@ import urllib.parse
 from pathlib import Path
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+MEGAPLAY_SIGNING_KEY = b'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s'
+
+
+def ensure_fresh_megaplay_url(url: str) -> str:
+    """Ensures MegaPlay HLS stream token has 24-hour expiration so download never cuts off."""
+    if not url or ("megaplay" not in url and "nexabloom" not in url):
+        return url
+    path_m = re.search(r'/([a-f0-9]{32})/([a-f0-9]{32})/', url, re.IGNORECASE)
+    if not path_m:
+        return url
+    base_url = re.sub(r'[\?&]token=[^&]+', '', url)
+    payload = f"{int(time.time()) + 86400}|{path_m.group(1).lower()}/{path_m.group(2).lower()}".encode("utf-8")
+    sig = hmac.new(MEGAPLAY_SIGNING_KEY, payload, hashlib.sha256).digest()
+    token = f"{base64.urlsafe_b64encode(payload).decode().rstrip('=')}.{base64.urlsafe_b64encode(sig).decode().rstrip('=')}"
+    sep = "&" if "?" in base_url else "?"
+    return f"{base_url}{sep}token={token}"
 
 
 def download_and_burn_stream(stream_url: str, output_name: str, referer: str, subtitle_url: str = None) -> str:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
+
+    # Ensure MegaPlay URL has a fresh 24h valid token before downloading
+    stream_url = ensure_fresh_megaplay_url(stream_url)
 
     temp_file = f"temp_{safe_name}"
     raw_stream = f"raw_{safe_name}"
@@ -60,8 +81,9 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                     "-http_persistent", "1",
                     "-http_multiple", "1",
                     "-reconnect", "1",
+                    "-reconnect_at_eof", "1",
                     "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5",
+                    "-reconnect_delay_max", "10",
                     "-allowed_segment_extensions", "ALL",
                     "-allowed_extensions", "ALL",
                     "-extension_picky", "0",
@@ -128,8 +150,9 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                     "-http_persistent", "1",
                     "-http_multiple", "1",
                     "-reconnect", "1",
+                    "-reconnect_at_eof", "1",
                     "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5",
+                    "-reconnect_delay_max", "10",
                     "-allowed_segment_extensions", "ALL",
                     "-allowed_extensions", "ALL",
                     "-extension_picky", "0",

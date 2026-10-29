@@ -130,7 +130,7 @@ def sign_megaplay_url(file_url: str) -> str:
     """Signs master M3U8 endpoint using HMAC-SHA256."""
     path_m = re.search(r'/([a-f0-9]{32})/([a-f0-9]{32})/', file_url, re.IGNORECASE)
     if path_m and "token=" not in file_url:
-        payload = f"{int(time.time()) + 90}|{path_m.group(1).lower()}/{path_m.group(2).lower()}".encode("utf-8")
+        payload = f"{int(time.time()) + 86400}|{path_m.group(1).lower()}/{path_m.group(2).lower()}".encode("utf-8")
         sig = hmac.new(MEGAPLAY_SIGNING_KEY, payload, hashlib.sha256).digest()
         token = f"{base64.urlsafe_b64encode(payload).decode().rstrip('=')}.{base64.urlsafe_b64encode(sig).decode().rstrip('=')}"
         sep = "&" if "?" in file_url else "?"
