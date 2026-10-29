@@ -2,9 +2,8 @@
 Single Episode Direct Uploader to Abyss.to and Telegram
 Supports:
 1. High-Speed Subtitle Burning (Hardsub) + High-Quality Anime H.264 compression (<500MB).
-2. Direct MP4 downloads via curl.
-3. Native MPEG-TS pre-fetching to prevent truncation on HLS #EXT-X-DISCONTINUITY (e.g. One Piece midpoint eyecatch at 13:02).
-4. Auto-refreshing 24-hour MegaPlay/Nexabloom HMAC-SHA256 CDN tokens.
+2. Direct HLS decoding across #EXT-X-DISCONTINUITY (ensuring full 24-minute episodes, no eyecatch cutoffs).
+3. Auto-refreshing 24-hour MegaPlay/Nexabloom HMAC-SHA256 CDN tokens.
 Uploads directly to Abyss.to and Telegram without quality compromise or stream truncation.
 """
 
@@ -60,13 +59,11 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
-    safe_base = safe_name[:-4]
 
     # Ensure MegaPlay URL has a fresh 24h valid token before downloading
     stream_url = ensure_fresh_megaplay_url(stream_url)
 
     temp_file = f"temp_{safe_name}"
-    raw_ts = f"raw_{safe_base}.ts"
     print(f"[*] Processing Stream: {stream_url}")
     print(f"[*] Referer: {referer}")
 
@@ -94,67 +91,23 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
         if burn_track and os.path.exists(burn_track) and os.path.getsize(burn_track) > 100:
             sub_filter = f"ass={burn_track}" if burn_track.endswith(".ass") else f"subtitles={burn_track}:force_style='FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1.5,Shadow=0,MarginV=25'"
 
-            # Pre-fetch HLS stream into MPEG-TS format (.ts)
-            # MPEG-TS is the native HLS transport stream container and preserves stream packets across
-            # #EXT-X-DISCONTINUITY timestamp resets (such as One Piece midpoint commercial break at 13:02).
-            # Muxing HLS directly into an .mp4 container with -c copy is what previously caused the 13:02 truncation.
-            print(f"[*] Pre-fetching HLS stream into MPEG-TS (.ts) container for full continuity...")
-            if ".m3u8" in stream_url:
-                subprocess.run([
-                    "ffmpeg", "-y",
-                    "-http_persistent", "1",
-                    "-http_multiple", "1",
-                    "-reconnect", "1",
-                    "-reconnect_at_eof", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "10",
-                    "-allowed_segment_extensions", "ALL",
-                    "-allowed_extensions", "ALL",
-                    "-extension_picky", "0",
-                    "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
-                    "-i", stream_url,
-                    "-c", "copy",
-                    "-f", "mpegts",
-                    raw_ts
-                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                subprocess.run([
-                    "curl", "-sSL",
-                    "-H", f"User-Agent: {USER_AGENT}",
-                    "-H", f"Referer: {referer}",
-                    "-o", raw_ts,
-                    stream_url
-                ])
-
-            # Duration validation guard: verify pre-fetched file
-            ts_dur = get_media_duration(raw_ts) if (os.path.exists(raw_ts) and os.path.getsize(raw_ts) > 500000) else 0.0
-            if ts_dur > 0:
-                print(f"[*] Pre-fetched stream duration: {ts_dur:.2f}s ({ts_dur/60:.2f} min)")
-
-            # Network options must ONLY be applied when reading from HTTP/HLS URL, NOT for local file raw_ts
-            if os.path.exists(raw_ts) and os.path.getsize(raw_ts) > 500000:
-                source_input = raw_ts
-                net_args = []
-            else:
-                print("[!] Pre-fetched file missing or empty. Streaming directly from HLS source...")
-                source_input = stream_url
-                net_args = [
-                    "-reconnect", "1",
-                    "-reconnect_at_eof", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "10",
-                    "-allowed_segment_extensions", "ALL",
-                    "-allowed_extensions", "ALL",
-                    "-extension_picky", "0",
-                    "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
-                ]
-
-            print(f"[*] Burning English subtitles ({burn_track}) into video with optimized ultrafast H.264 (<500MB target, zero quality loss)...")
+            # Direct stream decoding across HLS #EXT-X-DISCONTINUITY:
+            # FFmpeg decodes video frames to YUV and re-encodes with libx264, generating monotonic DTS/PTS.
+            # This completely avoids stream-copy cutoffs at the 12:30/13:00 anime commercial eyecatch break.
+            print(f"[*] Direct Stream Decoding & Subtitle Burning ({burn_track})...")
+            print(f"[*] Encoding optimized ultrafast H.264 animation profile (<500MB target, full continuity)...")
             cmd_burn = [
                 "ffmpeg", "-y",
                 "-threads", "0",
-            ] + net_args + [
-                "-i", source_input,
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "10",
+                "-allowed_segment_extensions", "ALL",
+                "-allowed_extensions", "ALL",
+                "-extension_picky", "0",
+                "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
+                "-i", stream_url,
                 "-vf", sub_filter,
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
@@ -170,50 +123,37 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
             ]
             res = subprocess.run(cmd_burn)
             if res.returncode != 0 or not os.path.exists(temp_file) or os.path.getsize(temp_file) < 500000:
-                print("[!] Subtitle burning encountered an issue. Falling back to clean stream encode...")
-                if os.path.exists(raw_ts) and os.path.getsize(raw_ts) > 500000:
-                    subprocess.run([
-                        "ffmpeg", "-y",
-                        "-threads", "0",
-                        "-i", raw_ts,
-                        "-c:v", "copy",
-                        "-c:a", "aac",
-                        "-b:a", "128k",
-                        "-movflags", "+faststart",
-                        temp_file
-                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                else:
-                    subprocess.run([
-                        "ffmpeg", "-y",
-                        "-threads", "0",
-                        "-reconnect", "1",
-                        "-reconnect_at_eof", "1",
-                        "-reconnect_streamed", "1",
-                        "-reconnect_delay_max", "10",
-                        "-allowed_segment_extensions", "ALL",
-                        "-allowed_extensions", "ALL",
-                        "-extension_picky", "0",
-                        "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
-                        "-i", stream_url,
-                        "-c:v", "libx264",
-                        "-preset", "ultrafast",
-                        "-tune", "animation",
-                        "-crf", "22",
-                        "-maxrate", "2600k",
-                        "-bufsize", "5200k",
-                        "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1",
-                        "-c:a", "aac",
-                        "-b:a", "128k",
-                        "-movflags", "+faststart",
-                        temp_file
-                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("[!] Subtitle burning encountered an issue. Retrying with basic stream encode...")
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-threads", "0",
+                    "-reconnect", "1",
+                    "-reconnect_at_eof", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "10",
+                    "-allowed_segment_extensions", "ALL",
+                    "-allowed_extensions", "ALL",
+                    "-extension_picky", "0",
+                    "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n",
+                    "-i", stream_url,
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-tune", "animation",
+                    "-crf", "22",
+                    "-maxrate", "2600k",
+                    "-bufsize", "5200k",
+                    "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    temp_file
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
             print("[*] No subtitle burning needed. Direct stream processing...")
             if ".m3u8" in stream_url:
                 subprocess.run([
                     "ffmpeg", "-y",
-                    "-http_persistent", "1",
-                    "-http_multiple", "1",
+                    "-threads", "0",
                     "-reconnect", "1",
                     "-reconnect_at_eof", "1",
                     "-reconnect_streamed", "1",
@@ -239,7 +179,7 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 ])
 
     finally:
-        for f_clean in (temp_sub, temp_ass, raw_ts):
+        for f_clean in (temp_sub, temp_ass):
             if f_clean and os.path.exists(f_clean):
                 try:
                     os.remove(f_clean)
