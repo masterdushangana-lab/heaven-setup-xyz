@@ -18,9 +18,11 @@ import hmac
 import base64
 import hashlib
 import random
+import string
 import shutil
 import subprocess
 import urllib.parse
+import urllib.request
 import concurrent.futures
 from pathlib import Path
 
@@ -234,6 +236,121 @@ def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
     }
 
 
+def generate_obfuscated_name(length: int = 25) -> str:
+    """
+    Generates a randomized 25-character name containing numbers, letters,
+    and special symbols, ensuring original anime names are never exposed.
+    """
+    special_symbols = "-_!@#$*~"
+    chars = string.ascii_letters + string.digits + special_symbols
+    while True:
+        candidate = "".join(random.choice(chars) for _ in range(length))
+        if (any(c.isalpha() for c in candidate) and 
+            any(c.isdigit() for c in candidate) and 
+            any(c in special_symbols for c in candidate)):
+            return candidate
+
+
+def calc_ok_sig(params: dict, access_token: str, application_secret_key: str) -> str:
+    """Calculates official Ok.ru REST API MD5 signature."""
+    session_secret_key = hashlib.md5((access_token + application_secret_key).encode("utf-8")).hexdigest().lower()
+    clean_params = {k: v for k, v in params.items() if k not in ("access_token", "sig")}
+    sorted_keys = sorted(clean_params.keys())
+    joined_str = "".join(f"{k}={clean_params[k]}" for k in sorted_keys)
+    sig_raw = joined_str + session_secret_key
+    return hashlib.md5(sig_raw.encode("utf-8")).hexdigest().lower()
+
+
+def upload_to_okru(temp_file: str, ok_access_token: str, ok_app_key: str, ok_app_secret: str) -> dict:
+    """
+    High-Speed Video Uploader to Ok.ru (Odnoklassniki) REST API.
+    Requirements met:
+    1. Video NOT published to newsfeed/walls (post_form=true).
+    2. Video is Publicly playable by direct embed (privacy=PUBLIC).
+    3. Original anime name is completely masked by a 25-character obfuscated string of letters, numbers & symbols.
+    """
+    obfuscated_name = generate_obfuscated_name(25)
+    file_size = os.path.getsize(temp_file)
+    print(f"[*] Uploading to Ok.ru with Obfuscated Title ({len(obfuscated_name)} chars): {obfuscated_name}")
+    start_time = time.time()
+
+    # Step 1: Acquire Upload URL via video.getUploadUrl
+    init_params = {
+        "application_key": ok_app_key,
+        "format": "json",
+        "method": "video.getUploadUrl",
+        "file_name": f"{obfuscated_name}.mp4",
+        "file_size": str(file_size),
+        "post_form": "true"  # Never publish to feed/wall!
+    }
+    init_sig = calc_ok_sig(init_params, ok_access_token, ok_app_secret)
+    init_params["sig"] = init_sig
+    init_params["access_token"] = ok_access_token
+
+    encoded_init = urllib.parse.urlencode(init_params)
+    init_req = urllib.request.Request("https://api.ok.ru/fb.do", data=encoded_init.encode("utf-8"), headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(init_req, timeout=20) as resp:
+            init_data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Failed to get Ok.ru upload URL: {e}") from e
+
+    upload_url = init_data.get("upload_url")
+    video_id = init_data.get("video_id")
+    if not upload_url or not video_id:
+        raise RuntimeError(f"Ok.ru initialization error: {init_data}")
+
+    # Step 2: Upload video file to the received upload_url
+    cmd_up = [
+        "curl", "-sS",
+        "-H", "Expect:",
+        "--http1.1",
+        "--tcp-nodelay",
+        "--connect-timeout", "30",
+        "--max-time", "1200",
+        "-F", f"data=@{temp_file};filename={obfuscated_name}.mp4",
+        upload_url
+    ]
+    proc = subprocess.run(cmd_up, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Ok.ru upload curl error: {proc.stderr}")
+
+    # Step 3: Complete upload and set Public playback permissions via video.update
+    update_params = {
+        "application_key": ok_app_key,
+        "format": "json",
+        "method": "video.update",
+        "vid": str(video_id),
+        "title": obfuscated_name,
+        "privacy": "PUBLIC"  # Allows public iframe embed streaming!
+    }
+    update_sig = calc_ok_sig(update_params, ok_access_token, ok_app_secret)
+    update_params["sig"] = update_sig
+    update_params["access_token"] = ok_access_token
+
+    encoded_update = urllib.parse.urlencode(update_params)
+    update_req = urllib.request.Request("https://api.ok.ru/fb.do", data=encoded_update.encode("utf-8"), headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(update_req, timeout=20) as resp:
+            pass  # Success returns empty response or status 200
+    except Exception as e:
+        print(f"[WARN] video.update call warning: {e}")
+
+    elapsed = time.time() - start_time
+    embed_url = f"https://ok.ru/videoembed/{video_id}"
+    print(f"[SUCCESS] Uploaded to Ok.ru in {elapsed:.1f}s! Video ID: {video_id} | Embed: {embed_url}")
+
+    return {
+        "okru": {
+            "video_id": str(video_id),
+            "embed_url": embed_url,
+            "title": obfuscated_name
+        },
+        "slug": str(video_id),
+        "embed_url": embed_url
+    }
+
+
 def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
     all_tokens = [t.strip() for t in re.split(r'[,;|\s]+', bot_tokens_raw) if t.strip()]
     if not all_tokens:
@@ -365,7 +482,11 @@ def send_admin_notification(bot_tokens_raw: str, admin_chat_id: str, message: st
 
 
 def main():
-    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip()
+    ok_access_token = os.getenv("OK_ACCESS_TOKEN", "").strip()
+    ok_app_key = os.getenv("OK_APP_KEY", "").strip() or os.getenv("OK_APPLICATION_KEY", "").strip()
+    ok_app_secret = os.getenv("OK_APP_SECRET", "").strip() or os.getenv("OK_APPLICATION_SECRET_KEY", "").strip()
+    streamhg_api_key = os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
+    abyss_api_key = streamhg_api_key
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -398,11 +519,14 @@ def main():
         # --- HIGH-SPEED CONCURRENT PARALLEL UPLOADS ---
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if upload_target in ("both", "abyss") and abyss_api_key:
-                fut_abyss = executor.submit(upload_to_abyss, temp_file, safe_name, abyss_api_key)
-                upload_futures[fut_abyss] = "abyss"
-            elif upload_target in ("both", "abyss") and not abyss_api_key:
-                print("[WARN] ABYSS_API_KEY not configured. Skipping Abyss.")
+            if upload_target in ("both", "okru", "streamhg", "abyss") and ok_access_token and ok_app_key and ok_app_secret:
+                fut_ok = executor.submit(upload_to_okru, temp_file, ok_access_token, ok_app_key, ok_app_secret)
+                upload_futures[fut_ok] = "okru"
+            elif upload_target in ("both", "streamhg", "abyss") and streamhg_api_key:
+                fut_hg = executor.submit(upload_to_streamhg, temp_file, safe_name, streamhg_api_key)
+                upload_futures[fut_hg] = "streamhg"
+            elif upload_target in ("both", "okru") and not (ok_access_token and ok_app_key and ok_app_secret):
+                print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured.")
 
             if upload_target in ("both", "telegram") and tg_bot_token and tg_chat_id:
                 fut_tg = executor.submit(upload_to_telegram, temp_file, safe_name, tg_bot_token, tg_chat_id, caption, tg_local_api_url)
@@ -414,7 +538,7 @@ def main():
                 dest = upload_futures[fut]
                 try:
                     res = fut.result()
-                    if dest == "abyss" and res:
+                    if dest in ("okru", "streamhg", "abyss") and res:
                         result.update(res)
                     elif dest == "telegram" and res:
                         result["telegram"] = res
@@ -423,7 +547,7 @@ def main():
                     if upload_target == dest:
                         raise
 
-        if upload_target == "both" and not (result.get("slug") or result.get("telegram")):
+        if upload_target == "both" and not (result.get("slug") or result.get("okru") or result.get("streamhg") or result.get("telegram")):
             raise RuntimeError("Both Abyss and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)
@@ -433,7 +557,9 @@ def main():
             tg_info = result.get("telegram")
             tg_post = tg_info.get("post_url") if isinstance(tg_info, dict) else ""
 
-            slug_str = f" | 🌊 Slug: <code>{slug}</code>" if slug else ""
+            ok_info = result.get("okru")
+            ok_id = ok_info.get("video_id") if isinstance(ok_info, dict) else slug
+            slug_str = f" | 🎬 Ok.ru ID: <code>{ok_id}</code>" if ok_id else ""
             tg_str = f" | ✈️ <a href='{tg_post}'>Telegram Post</a>" if tg_post else ""
 
             admin_alert = (
