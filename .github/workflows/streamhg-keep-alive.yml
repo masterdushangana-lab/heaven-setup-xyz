@@ -1,0 +1,35 @@
+name: StreamHG Inactivity Protection & Keep-Alive
+
+on:
+  schedule:
+    - cron: '0 4 */15 * *' # Automatically runs every 15 days at 04:00 UTC (Resets 60-day timer)
+  workflow_dispatch: # Allows manual trigger anytime from GitHub UI or Portal
+
+concurrency:
+  group: streamhg-keepalive
+  cancel-in-progress: true
+
+jobs:
+  keepalive:
+    name: Ping All StreamHG Videos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography
+        run: pip install cryptography
+
+      - name: Run Keep-Alive Ping Bot
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
+        run: |
+          python keep_alive_streamhg.py

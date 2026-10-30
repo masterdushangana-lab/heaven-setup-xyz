@@ -1,8 +1,8 @@
 """
-Single Episode Direct Uploader to Ok.ru and Telegram
+Single Episode Direct Uploader to StreamHG and Telegram
 1. High-Speed Subtitle Burning + H.264 compression (<500MB).
-2. Ok.ru Unlisted Upload with 25-character randomized obfuscated title.
-3. Concurrent Parallel Upload to Ok.ru and Telegram Channel.
+2. StreamHG High-Speed Video Upload with API Key.
+3. Concurrent Parallel Upload to StreamHG and Telegram Channel.
 """
 
 import os
@@ -196,71 +196,27 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     return temp_file
 
 
-def generate_obfuscated_name(length: int = 25) -> str:
+def upload_to_streamhg(temp_file: str, safe_name: str, streamhg_api_key: str) -> dict:
     """
-    Generates a randomized 25-character name containing numbers, letters,
-    and special symbols, ensuring original anime names are never exposed.
+    Direct High-Speed Uploader to StreamHG (streamhg.com).
+    1. Requests designated upload server endpoint via GET https://streamhgapi.com/api/upload/server?key={key}
+    2. Uploads video via multipart POST.
+    3. Returns filecode, player_url, and embed_url.
     """
-    special_symbols = "-_!@#$*~"
-    chars = string.ascii_letters + string.digits + special_symbols
-    while True:
-        candidate = "".join(random.choice(chars) for _ in range(length))
-        if (any(c.isalpha() for c in candidate) and 
-            any(c.isdigit() for c in candidate) and 
-            any(c in special_symbols for c in candidate)):
-            return candidate
-
-
-def calc_ok_sig(params: dict, access_token: str, application_secret_key: str) -> str:
-    """Calculates official Ok.ru REST API MD5 signature."""
-    session_secret_key = hashlib.md5((access_token + application_secret_key).encode("utf-8")).hexdigest().lower()
-    clean_params = {k: v for k, v in params.items() if k not in ("access_token", "sig")}
-    sorted_keys = sorted(clean_params.keys())
-    joined_str = "".join(f"{k}={clean_params[k]}" for k in sorted_keys)
-    sig_raw = joined_str + session_secret_key
-    return hashlib.md5(sig_raw.encode("utf-8")).hexdigest().lower()
-
-
-def upload_to_okru(temp_file: str, ok_access_token: str, ok_app_key: str, ok_app_secret: str) -> dict:
-    """
-    High-Speed Video Uploader to Ok.ru (Odnoklassniki) REST API.
-    Requirements met:
-    1. Video NOT published to newsfeed/walls (post_form=true).
-    2. Video is Publicly playable by direct embed (privacy=PUBLIC).
-    3. Original anime name is completely masked by a 25-character obfuscated string of letters, numbers & symbols.
-    """
-    obfuscated_name = generate_obfuscated_name(25)
-    file_size = os.path.getsize(temp_file)
-    print(f"[*] Uploading to Ok.ru with Obfuscated Title ({len(obfuscated_name)} chars): {obfuscated_name}")
+    print(f"[*] Uploading to StreamHG: {safe_name}")
     start_time = time.time()
-
-    # Step 1: Acquire Upload URL via video.getUploadUrl
-    init_params = {
-        "application_key": ok_app_key,
-        "format": "json",
-        "method": "video.getUploadUrl",
-        "file_name": f"{obfuscated_name}.mp4",
-        "file_size": str(file_size),
-        "post_form": "true"  # Never publish to feed/wall!
-    }
-    init_sig = calc_ok_sig(init_params, ok_access_token, ok_app_secret)
-    init_params["sig"] = init_sig
-    init_params["access_token"] = ok_access_token
-
-    encoded_init = urllib.parse.urlencode(init_params)
-    init_req = urllib.request.Request("https://api.ok.ru/fb.do", data=encoded_init.encode("utf-8"), headers={"User-Agent": USER_AGENT})
+    server_api = f"https://streamhgapi.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}" 
+    req_server = urllib.request.Request(server_api, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(init_req, timeout=20) as resp:
-            init_data = json.loads(resp.read().decode("utf-8"))
+        with urllib.request.urlopen(req_server, timeout=20) as resp:
+            s_data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        raise RuntimeError(f"Failed to get Ok.ru upload URL: {e}") from e
+        raise RuntimeError(f"Failed to obtain StreamHG upload server endpoint: {e}") from e
 
-    upload_url = init_data.get("upload_url")
-    video_id = init_data.get("video_id")
-    if not upload_url or not video_id:
-        raise RuntimeError(f"Ok.ru initialization error: {init_data}")
+    upload_endpoint = s_data.get("result")
+    if not upload_endpoint:
+        raise RuntimeError(f"StreamHG did not return valid upload server: {s_data}")
 
-    # Step 2: Upload video file to the received upload_url
     cmd_up = [
         "curl", "-sS",
         "-H", "Expect:",
@@ -268,44 +224,45 @@ def upload_to_okru(temp_file: str, ok_access_token: str, ok_app_key: str, ok_app
         "--tcp-nodelay",
         "--connect-timeout", "30",
         "--max-time", "1200",
-        "-F", f"data=@{temp_file};filename={obfuscated_name}.mp4",
-        upload_url
+        "-F", f"key={streamhg_api_key}",
+        "-F", f"file_title={safe_name}",
+        "-F", f"file=@{temp_file};filename={safe_name}",
+        upload_endpoint
     ]
+
     proc = subprocess.run(cmd_up, capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"Ok.ru upload curl error: {proc.stderr}")
+        raise RuntimeError(f"StreamHG upload curl error: {proc.stderr}")
 
-    # Step 3: Complete upload and set Public playback permissions via video.update
-    update_params = {
-        "application_key": ok_app_key,
-        "format": "json",
-        "method": "video.update",
-        "vid": str(video_id),
-        "title": obfuscated_name,
-        "privacy": "PUBLIC"  # Allows public iframe embed streaming!
-    }
-    update_sig = calc_ok_sig(update_params, ok_access_token, ok_app_secret)
-    update_params["sig"] = update_sig
-    update_params["access_token"] = ok_access_token
-
-    encoded_update = urllib.parse.urlencode(update_params)
-    update_req = urllib.request.Request("https://api.ok.ru/fb.do", data=encoded_update.encode("utf-8"), headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(update_req, timeout=20) as resp:
-            pass  # Success returns empty response or status 200
+        data = json.loads(proc.stdout)
     except Exception as e:
-        print(f"[WARN] video.update call warning: {e}")
+        raise RuntimeError(f"Failed to parse StreamHG response JSON: {proc.stdout[:250]}") from e
+
+    filecode = None
+    files_list = data.get("files", [])
+    if files_list and isinstance(files_list, list) and len(files_list) > 0:
+        filecode = files_list[0].get("filecode")
+    elif isinstance(data.get("result"), dict) and data["result"].get("filecode"):
+        filecode = data["result"]["filecode"]
+    elif data.get("filecode"):
+        filecode = data.get("filecode")
+
+    if not filecode:
+        raise RuntimeError(f"Unexpected StreamHG response (missing filecode): {data}")
 
     elapsed = time.time() - start_time
-    embed_url = f"https://ok.ru/videoembed/{video_id}"
-    print(f"[SUCCESS] Uploaded to Ok.ru in {elapsed:.1f}s! Video ID: {video_id} | Embed: {embed_url}")
+    embed_url = f"https://streamhg.com/e/{filecode}"
+    print(f"[SUCCESS] Uploaded to StreamHG in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
 
     return {
-        "okru": {
-            "video_id": str(video_id),
-            "embed_url": embed_url,
-            "title": obfuscated_name
-        }
+        "streamhg": {
+            "file_code": filecode,
+            "player_url": embed_url,
+            "embed_url": embed_url
+        },
+        "slug": filecode,
+        "embed_url": embed_url
     }
 
 
@@ -440,9 +397,7 @@ def send_admin_notification(bot_tokens_raw: str, admin_chat_id: str, message: st
 
 
 def main():
-    ok_access_token = os.getenv("OK_ACCESS_TOKEN", "").strip()
-    ok_app_key = os.getenv("OK_APP_KEY", "").strip() or os.getenv("OK_APPLICATION_KEY", "").strip()
-    ok_app_secret = os.getenv("OK_APP_SECRET", "").strip() or os.getenv("OK_APPLICATION_SECRET_KEY", "").strip()
+    streamhg_api_key = os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -474,33 +429,34 @@ def main():
 
         # --- TARGET-AWARE DEDUPLICATION & CONCURRENT PARALLEL UPLOADS ---
         existing_tg = item_data.get("existing_telegram")
-        existing_ok = item_data.get("existing_okru")
+        existing_hg = item_data.get("existing_streamhg") or ({"file_code": item_data["slug"]} if item_data.get("slug") else None)
 
         # Determine which destinations actually require uploading
         has_existing_tg = bool(existing_tg and (isinstance(existing_tg, dict) and existing_tg.get("message_id")))
-        has_existing_ok = bool(existing_ok and (isinstance(existing_ok, dict) and (existing_ok.get("video_id") or existing_ok.get("embed_url"))))
+        has_existing_hg = bool(existing_hg and (isinstance(existing_hg, dict) and (existing_hg.get("file_code") or existing_hg.get("embed_url"))))
 
         need_telegram = upload_target in ("both", "telegram") and not has_existing_tg
-        need_okru = upload_target in ("both", "okru") and not has_existing_ok
+        need_streamhg = upload_target in ("both", "streamhg") and not has_existing_hg
 
         if has_existing_tg:
             print(f"[*] Episode {ep_num} already exists in Telegram Channel (Msg ID: {existing_tg.get('message_id')}). Skipping duplicate Telegram upload.")
             result["telegram"] = existing_tg
 
-        if has_existing_ok:
-            print(f"[*] Episode {ep_num} already exists on Ok.ru (Video ID: {existing_ok.get('video_id')}). Skipping duplicate Ok.ru upload.")
-            result["okru"] = existing_ok
-            if "slug" not in result and existing_ok.get("video_id"):
-                result["slug"] = existing_ok.get("video_id")
+        if has_existing_hg:
+            hg_code = existing_hg.get("file_code") or existing_hg.get("slug")
+            print(f"[*] Episode {ep_num} already exists on StreamHG (File Code: {hg_code}). Skipping duplicate StreamHG upload.")
+            result["streamhg"] = existing_hg
+            result["slug"] = hg_code
+            result["embed_url"] = f"https://streamhg.com/e/{hg_code}"
 
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if need_okru:
-                if ok_access_token and ok_app_key and ok_app_secret:
-                    fut_ok = executor.submit(upload_to_okru, temp_file, ok_access_token, ok_app_key, ok_app_secret)
-                    upload_futures[fut_ok] = "okru"
+            if need_streamhg:
+                if streamhg_api_key:
+                    fut_hg = executor.submit(upload_to_streamhg, temp_file, safe_name, streamhg_api_key)
+                    upload_futures[fut_hg] = "streamhg"
                 else:
-                    print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured. Skipping Ok.ru.")
+                    print("[WARN] STREAMHG_API_KEY not configured. Skipping StreamHG.")
 
             if need_telegram:
                 if tg_bot_token and tg_chat_id:
@@ -513,7 +469,7 @@ def main():
                 dest = upload_futures[fut]
                 try:
                     res = fut.result()
-                    if dest == "okru" and res:
+                    if dest == "streamhg" and res:
                         result.update(res)
                     elif dest == "telegram" and res:
                         result["telegram"] = res
@@ -522,19 +478,16 @@ def main():
                     if upload_target == dest:
                         raise
 
-        if upload_target == "both" and not (result.get("okru") or result.get("telegram")):
-            raise RuntimeError("Both Ok.ru and Telegram uploads failed.")
+        if upload_target == "both" and not (result.get("streamhg") or result.get("slug") or result.get("telegram")):
+            raise RuntimeError("Both StreamHG and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)
         if tg_bot_token and tg_admin_chat_id:
             size_mb = item_data.get("size_mb", 0)
-            slug = result.get("slug")
+            slug = result.get("slug") or (result.get("streamhg", {}).get("file_code") if isinstance(result.get("streamhg"), dict) else "")
             tg_info = result.get("telegram")
             tg_post = tg_info.get("post_url") if isinstance(tg_info, dict) else ""
-
-            ok_info = result.get("okru")
-            ok_id = ok_info.get("video_id") if isinstance(ok_info, dict) else slug
-            slug_str = f" | 🎬 Ok.ru ID: <code>{ok_id}</code>" if ok_id else ""
+            slug_str = f" | ⚡ StreamHG: <code>{slug}</code>" if slug else ""
             tg_str = f" | ✈️ <a href='{tg_post}'>Telegram Post</a>" if tg_post else ""
 
             admin_alert = (

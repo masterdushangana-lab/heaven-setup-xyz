@@ -22,13 +22,13 @@ on:
           - '720p'
           - '360p'
       upload_target:
-        description: 'Where to upload: both, okru, or telegram'
+        description: 'Where to upload: both, streamhg, or telegram'
         required: false
         default: 'both'
         type: choice
         options:
           - both
-          - okru
+          - streamhg
           - telegram
 
 concurrency:
@@ -57,9 +57,7 @@ jobs:
       - name: Resolve Anikoto episodes
         id: detect_step
         env:
-          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          OK_APP_KEY: ${{ secrets.OK_APP_KEY || secrets.OK_APPLICATION_KEY }}
-          OK_APP_SECRET: ${{ secrets.OK_APP_SECRET || secrets.OK_APPLICATION_SECRET_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TARGET_MAL_ID: ${{ inputs.target_mal_id }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
           TARGET_QUALITY: ${{ inputs.target_quality || '1080p' }}
@@ -122,9 +120,7 @@ jobs:
 
       - name: Upload Episode
         env:
-          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
-          OK_APP_KEY: ${{ secrets.OK_APP_KEY || secrets.OK_APPLICATION_KEY }}
-          OK_APP_SECRET: ${{ secrets.OK_APP_SECRET || secrets.OK_APPLICATION_SECRET_KEY }}
+          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}

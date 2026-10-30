@@ -133,11 +133,13 @@ def main():
                             computed_ts = 1000000000 + int(ep_num if ep_num.isdigit() else 0)
 
                         ep_record = history[primary_key]["episodes"].get(ep_num, {})
-                        if data.get("okru"):
-                            ep_record["okru"] = data["okru"]
+                        if data.get("streamhg"):
+                            ep_record["streamhg"] = data["streamhg"]
+                            ep_record["slug"] = data["streamhg"].get("file_code")
+                            ep_record["embed_url"] = data["streamhg"].get("embed_url") or f"https://streamhg.com/e/{data['streamhg'].get('file_code')}"
                         elif data.get("slug"):
                             ep_record["slug"] = data["slug"]
-                            ep_record["embed_url"] = data.get("embed_url") or f"https://player.abyssplayer.com/{data['slug']}"
+                            ep_record["embed_url"] = data.get("embed_url") or f"https://streamhg.com/e/{data['slug']}"
                         if data.get("telegram"):
                             ep_record["telegram"] = data["telegram"]
                         if data.get("filename"):
@@ -148,7 +150,7 @@ def main():
 
                         history[primary_key]["episodes"][ep_num] = ep_record
                         updated_count += 1
-                        print(f"[+] Mapped MAL[{primary_key}] -> Ep {ep_num} -> Ok.ru: {ep_record.get('slug')} | Telegram: {bool(data.get('telegram'))}")
+                        print(f"[+] Mapped MAL[{primary_key}] -> Ep {ep_num} -> StreamHG: {ep_record.get('slug')} | Telegram: {bool(data.get('telegram'))}")
 
                     except Exception as e:
                         print(f"[!] Error parsing {full_path}: {e}")

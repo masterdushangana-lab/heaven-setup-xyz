@@ -228,15 +228,15 @@ def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], ani
     if not ep_record:
         return False
 
-    has_okru = bool(ep_record.get("okru") and ep_record["okru"].get("video_id"))
+    has_streamhg = bool((ep_record.get("streamhg") and ep_record["streamhg"].get("file_code")) or ep_record.get("slug"))
     has_telegram = bool(ep_record.get("telegram"))
 
-    if upload_target == "okru":
-        return has_okru
+    if upload_target in ("streamhg", "abyss"):
+        return has_streamhg
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        return has_okru and has_telegram
+        return has_streamhg and has_telegram
 
     return True
 
@@ -460,7 +460,8 @@ def main():
                 "mal_info": mal_info,
                 "upload_target": upload_target,
                 "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-                "existing_okru": ep_rec.get("okru") if ep_rec else None
+                "existing_streamhg": ep_rec.get("streamhg") if ep_rec else None,
+                "slug": ep_rec.get("slug") if ep_rec else None
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
@@ -506,7 +507,8 @@ def main():
                 "new_php_rank": rank_idx,
                 "upload_target": upload_target,
                 "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-                "existing_okru": ep_rec.get("okru") if ep_rec else None
+                "existing_streamhg": ep_rec.get("streamhg") if ep_rec else None,
+                "slug": ep_rec.get("slug") if ep_rec else None
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
