@@ -1,12 +1,8 @@
 """
-Single Episode Direct Uploader to Abyss.to and Telegram
-Supports:
-1. High-Speed Subtitle Burning (Hardsub) + High-Quality Anime H.264 compression (<500MB).
-2. Direct HLS decoding across #EXT-X-DISCONTINUITY (ensuring full 24-minute episodes, no eyecatch cutoffs).
-3. Auto-refreshing 24-hour MegaPlay/Nexabloom HMAC-SHA256 CDN tokens.
-4. Concurrent Parallel Uploads to Abyss.to & Telegram (50% faster upload speeds).
-5. Instant Admin Telegram Completion Alerts with Multi-Bot Pool Failover.
-Uploads directly to Abyss.to and Telegram without quality compromise or stream truncation.
+Single Episode Direct Uploader to Ok.ru and Telegram
+1. High-Speed Subtitle Burning + H.264 compression (<500MB).
+2. Ok.ru Unlisted Upload with 25-character randomized obfuscated title.
+3. Concurrent Parallel Upload to Ok.ru and Telegram Channel.
 """
 
 import os
@@ -198,42 +194,6 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     file_size_mb = os.path.getsize(temp_file) / (1024 * 1024)
     print(f"[+] Output ready: {file_size_mb:.2f} MB | Duration: {final_dur:.2f}s ({final_dur/60:.2f} min) (Target <500MB achieved!).")
     return temp_file
-
-
-def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
-    print(f"[*] Uploading to Abyss.to: {safe_name}")
-    start_time = time.time()
-    upload_endpoint = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key, safe='')}"
-    cmd_up = [
-        "curl", "-sS",
-        "-H", "Expect:",
-        "--http1.1",
-        "--tcp-nodelay",
-        "--connect-timeout", "30",
-        "--max-time", "600",
-        "-F", f"file=@{temp_file};filename={safe_name}",
-        upload_endpoint
-    ]
-
-    proc = subprocess.run(cmd_up, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Abyss upload curl error: {proc.stderr}")
-
-    try:
-        data = json.loads(proc.stdout)
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse Abyss response JSON: {proc.stdout[:200]}") from e
-
-    slug = data.get("slug") or data.get("file_id") or data.get("id")
-    if not slug:
-        raise RuntimeError(f"Unexpected Abyss response: {data}")
-
-    elapsed = time.time() - start_time
-    print(f"[SUCCESS] Uploaded to Abyss in {elapsed:.1f}s! File Slug: {slug}")
-    return {
-        "slug": slug,
-        "embed_url": f"https://abyss.to/{slug}"
-    }
 
 
 def generate_obfuscated_name(length: int = 25) -> str:
@@ -483,8 +443,6 @@ def main():
     ok_access_token = os.getenv("OK_ACCESS_TOKEN", "").strip()
     ok_app_key = os.getenv("OK_APP_KEY", "").strip() or os.getenv("OK_APPLICATION_KEY", "").strip()
     ok_app_secret = os.getenv("OK_APP_SECRET", "").strip() or os.getenv("OK_APPLICATION_SECRET_KEY", "").strip()
-    streamhg_api_key = os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
-    abyss_api_key = streamhg_api_key
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -517,14 +475,11 @@ def main():
         # --- HIGH-SPEED CONCURRENT PARALLEL UPLOADS ---
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if upload_target in ("both", "okru", "streamhg", "abyss") and ok_access_token and ok_app_key and ok_app_secret:
+            if upload_target in ("both", "okru") and ok_access_token and ok_app_key and ok_app_secret:
                 fut_ok = executor.submit(upload_to_okru, temp_file, ok_access_token, ok_app_key, ok_app_secret)
                 upload_futures[fut_ok] = "okru"
-            elif upload_target in ("both", "streamhg", "abyss") and streamhg_api_key:
-                fut_hg = executor.submit(upload_to_streamhg, temp_file, safe_name, streamhg_api_key)
-                upload_futures[fut_hg] = "streamhg"
             elif upload_target in ("both", "okru") and not (ok_access_token and ok_app_key and ok_app_secret):
-                print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured.")
+                print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured. Skipping Ok.ru.")
 
             if upload_target in ("both", "telegram") and tg_bot_token and tg_chat_id:
                 fut_tg = executor.submit(upload_to_telegram, temp_file, safe_name, tg_bot_token, tg_chat_id, caption, tg_local_api_url)
@@ -536,7 +491,7 @@ def main():
                 dest = upload_futures[fut]
                 try:
                     res = fut.result()
-                    if dest in ("okru", "streamhg", "abyss") and res:
+                    if dest == "okru" and res:
                         result.update(res)
                     elif dest == "telegram" and res:
                         result["telegram"] = res
@@ -546,7 +501,7 @@ def main():
                         raise
 
         if upload_target == "both" and not (result.get("okru") or result.get("telegram")):
-            raise RuntimeError("Both Abyss and Telegram uploads failed.")
+            raise RuntimeError("Both Ok.ru and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)
         if tg_bot_token and tg_admin_chat_id:
