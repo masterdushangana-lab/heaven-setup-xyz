@@ -200,70 +200,106 @@ def upload_to_streamhg(temp_file: str, safe_name: str, streamhg_api_key: str) ->
     """
     Direct High-Speed Uploader to StreamHG (streamhg.com).
     1. Requests designated upload server endpoint via GET https://streamhgapi.com/api/upload/server?key={key}
-    2. Uploads video via multipart POST.
-    3. Returns filecode, player_url, and embed_url.
+    2. Uploads video via multipart POST with IPv4 force, realistic User-Agent, and SSL tolerance.
+    3. Retries up to 3 times with fresh endpoints if an individual storage node times out.
+    4. Returns filecode, player_url, and embed_url.
     """
     print(f"[*] Uploading to StreamHG: {safe_name}")
     start_time = time.time()
-    server_api = f"https://streamhgapi.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}" 
-    req_server = urllib.request.Request(server_api, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req_server, timeout=20) as resp:
-            s_data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        raise RuntimeError(f"Failed to obtain StreamHG upload server endpoint: {e}") from e
+    
+    max_retries = 3
+    last_err = None
 
-    upload_endpoint = s_data.get("result")
-    if not upload_endpoint:
-        raise RuntimeError(f"StreamHG did not return valid upload server: {s_data}")
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            print(f"[*] StreamHG upload retry {attempt}/{max_retries}...")
 
-    cmd_up = [
-        "curl", "-sS",
-        "-H", "Expect:",
-        "--http1.1",
-        "--tcp-nodelay",
-        "--connect-timeout", "30",
-        "--max-time", "1200",
-        "-F", f"key={streamhg_api_key}",
-        "-F", f"file_title={safe_name}",
-        "-F", f"file=@{temp_file};filename={safe_name}",
-        upload_endpoint
-    ]
+        # 1. Obtain fresh upload server endpoint
+        s_data = None
+        api_endpoints = [
+            f"https://streamhgapi.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}",
+            f"https://api.streamwish.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}"
+        ]
+        
+        upload_endpoint = None
+        for server_api in api_endpoints:
+            try:
+                req_server = urllib.request.Request(server_api, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req_server, timeout=25) as resp:
+                    s_data = json.loads(resp.read().decode("utf-8"))
+                if s_data and s_data.get("result"):
+                    upload_endpoint = s_data["result"]
+                    break
+            except Exception as ep_err:
+                print(f"[!] Warning fetching upload server from {server_api}: {ep_err}")
 
-    proc = subprocess.run(cmd_up, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"StreamHG upload curl error: {proc.stderr}")
+        if not upload_endpoint:
+            last_err = RuntimeError(f"StreamHG did not return valid upload server: {s_data}")
+            time.sleep(3)
+            continue
 
-    try:
-        data = json.loads(proc.stdout)
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse StreamHG response JSON: {proc.stdout[:250]}") from e
+        print(f"[*] StreamHG upload server allocated: {upload_endpoint}")
 
-    filecode = None
-    files_list = data.get("files", [])
-    if files_list and isinstance(files_list, list) and len(files_list) > 0:
-        filecode = files_list[0].get("filecode")
-    elif isinstance(data.get("result"), dict) and data["result"].get("filecode"):
-        filecode = data["result"]["filecode"]
-    elif data.get("filecode"):
-        filecode = data.get("filecode")
+        # 2. Curl command with IPv4 force, browser User-Agent, and robust timeouts
+        cmd_up = [
+            "curl", "-sS",
+            "-4",  # Force IPv4 (Prevents GitHub Actions IPv6 blackhole timeouts)
+            "-A", USER_AGENT,  # Realistic User-Agent (bypasses curl anti-bot blocks)
+            "-H", "Expect:",
+            "-k",  # Insecure (accept wildcard/storage node SSL certs without hanging)
+            "--connect-timeout", "60",  # 60s connection timeout
+            "--max-time", "1800",  # 30min transfer timeout for large files
+            "-F", f"key={streamhg_api_key}",
+            "-F", f"file_title={safe_name}",
+            "-F", f"file=@{temp_file};filename={safe_name}",
+            upload_endpoint
+        ]
 
-    if not filecode:
-        raise RuntimeError(f"Unexpected StreamHG response (missing filecode): {data}")
+        proc = subprocess.run(cmd_up, capture_output=True, text=True)
+        if proc.returncode != 0:
+            last_err = RuntimeError(f"StreamHG upload curl error: {proc.stderr.strip()}")
+            print(f"[!] StreamHG upload curl attempt {attempt} failed: {proc.stderr.strip()}")
+            time.sleep(4)
+            continue
 
-    elapsed = time.time() - start_time
-    embed_url = f"https://streamhg.com/e/{filecode}"
-    print(f"[SUCCESS] Uploaded to StreamHG in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
+        try:
+            data = json.loads(proc.stdout)
+        except Exception as e:
+            last_err = RuntimeError(f"Failed to parse StreamHG response JSON: {proc.stdout[:250]}")
+            print(f"[!] StreamHG response JSON error attempt {attempt}: {proc.stdout[:150]}")
+            time.sleep(4)
+            continue
 
-    return {
-        "streamhg": {
-            "file_code": filecode,
-            "player_url": embed_url,
+        filecode = None
+        files_list = data.get("files", [])
+        if files_list and isinstance(files_list, list) and len(files_list) > 0:
+            filecode = files_list[0].get("filecode")
+        elif isinstance(data.get("result"), dict) and data["result"].get("filecode"):
+            filecode = data["result"]["filecode"]
+        elif data.get("filecode"):
+            filecode = data.get("filecode")
+
+        if not filecode:
+            last_err = RuntimeError(f"Unexpected StreamHG response (missing filecode): {data}")
+            print(f"[!] StreamHG attempt {attempt} missing filecode in response: {data}")
+            time.sleep(4)
+            continue
+
+        elapsed = time.time() - start_time
+        embed_url = f"https://streamhg.com/e/{filecode}"
+        print(f"[SUCCESS] Uploaded to StreamHG in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
+
+        return {
+            "streamhg": {
+                "file_code": filecode,
+                "player_url": embed_url,
+                "embed_url": embed_url
+            },
+            "slug": filecode,
             "embed_url": embed_url
-        },
-        "slug": filecode,
-        "embed_url": embed_url
-    }
+        }
+
+    raise RuntimeError(f"All {max_retries} StreamHG upload attempts failed. Last error: {last_err}")
 
 
 def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
