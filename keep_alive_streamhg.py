@@ -127,8 +127,6 @@ def main():
             code = None
             if ep_data.get("streamhg") and ep_data["streamhg"].get("file_code"):
                 code = ep_data["streamhg"]["file_code"]
-            elif ep_data.get("slug"):
-                code = ep_data["slug"]
             if code and len(code) >= 6:
                 target_files.add(code)
 

@@ -429,11 +429,11 @@ def main():
 
         # --- TARGET-AWARE DEDUPLICATION & CONCURRENT PARALLEL UPLOADS ---
         existing_tg = item_data.get("existing_telegram")
-        existing_hg = item_data.get("existing_streamhg") or ({"file_code": item_data["slug"]} if item_data.get("slug") else None)
+        existing_hg = item_data.get("existing_streamhg")
 
         # Determine which destinations actually require uploading
         has_existing_tg = bool(existing_tg and (isinstance(existing_tg, dict) and existing_tg.get("message_id")))
-        has_existing_hg = bool(existing_hg and (isinstance(existing_hg, dict) and (existing_hg.get("file_code") or existing_hg.get("embed_url"))))
+        has_existing_hg = bool(existing_hg and (isinstance(existing_hg, dict) and existing_hg.get("file_code")))
 
         need_telegram = upload_target in ("both", "telegram") and not has_existing_tg
         need_streamhg = upload_target in ("both", "streamhg") and not has_existing_hg
@@ -443,10 +443,9 @@ def main():
             result["telegram"] = existing_tg
 
         if has_existing_hg:
-            hg_code = existing_hg.get("file_code") or existing_hg.get("slug")
+            hg_code = existing_hg.get("file_code")
             print(f"[*] Episode {ep_num} already exists on StreamHG (File Code: {hg_code}). Skipping duplicate StreamHG upload.")
             result["streamhg"] = existing_hg
-            result["slug"] = hg_code
             result["embed_url"] = f"https://streamhg.com/e/{hg_code}"
 
         upload_futures = {}
@@ -478,7 +477,7 @@ def main():
                     if upload_target == dest:
                         raise
 
-        if upload_target == "both" and not (result.get("streamhg") or result.get("slug") or result.get("telegram")):
+        if upload_target == "both" and not (result.get("streamhg") or result.get("telegram")):
             raise RuntimeError("Both StreamHG and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)
