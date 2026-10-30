@@ -345,9 +345,7 @@ def upload_to_okru(temp_file: str, ok_access_token: str, ok_app_key: str, ok_app
             "video_id": str(video_id),
             "embed_url": embed_url,
             "title": obfuscated_name
-        },
-        "slug": str(video_id),
-        "embed_url": embed_url
+        }
     }
 
 
@@ -547,7 +545,7 @@ def main():
                     if upload_target == dest:
                         raise
 
-        if upload_target == "both" and not (result.get("slug") or result.get("okru") or result.get("streamhg") or result.get("telegram")):
+        if upload_target == "both" and not (result.get("okru") or result.get("telegram")):
             raise RuntimeError("Both Abyss and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)

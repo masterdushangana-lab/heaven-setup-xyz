@@ -80,15 +80,15 @@ def is_already_uploaded(history: dict, primary_key: str, ep_num: int, upload_tar
         return False
 
     ep_data = entry["episodes"][ep_str]
-    has_cloud = bool(ep_data.get("okru") or ep_data.get("streamhg") or ep_data.get("slug"))
+    has_okru = bool(ep_data.get("okru") and ep_data["okru"].get("video_id"))
     has_telegram = bool(ep_data.get("telegram"))
 
-    if upload_target in ("okru", "streamhg", "abyss"):
-        return has_cloud
+    if upload_target == "okru":
+        return has_okru
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        return has_cloud and has_telegram
+        return has_okru and has_telegram
     return False
 
 

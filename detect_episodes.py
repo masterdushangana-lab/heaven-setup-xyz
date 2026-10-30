@@ -228,16 +228,15 @@ def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], ani
     if not ep_record:
         return False
 
-    has_cloud = bool(ep_record.get("okru") or ep_record.get("streamhg") or ep_record.get("slug"))
+    has_okru = bool(ep_record.get("okru") and ep_record["okru"].get("video_id"))
     has_telegram = bool(ep_record.get("telegram"))
 
-    if upload_target in ("okru", "streamhg", "abyss"):
-        return has_cloud
+    if upload_target == "okru":
+        return has_okru
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        # If user wants both, returns True only if both StreamHG and Telegram exist
-        return has_cloud and has_telegram
+        return has_okru and has_telegram
 
     return True
 

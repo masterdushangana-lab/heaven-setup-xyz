@@ -135,15 +135,9 @@ def main():
                         ep_record = history[primary_key]["episodes"].get(ep_num, {})
                         if data.get("okru"):
                             ep_record["okru"] = data["okru"]
-                            ep_record["slug"] = str(data["okru"].get("video_id"))
-                            ep_record["embed_url"] = data["okru"].get("embed_url") or f"https://ok.ru/videoembed/{data['okru'].get('video_id')}"
-                        elif data.get("streamhg"):
-                            ep_record["streamhg"] = data["streamhg"]
-                            ep_record["slug"] = data["streamhg"].get("file_code")
-                            ep_record["embed_url"] = data["streamhg"].get("embed_url")
                         elif data.get("slug"):
                             ep_record["slug"] = data["slug"]
-                            ep_record["embed_url"] = data.get("embed_url") or f"https://ok.ru/videoembed/{data['slug']}"
+                            ep_record["embed_url"] = data.get("embed_url") or f"https://player.abyssplayer.com/{data['slug']}"
                         if data.get("telegram"):
                             ep_record["telegram"] = data["telegram"]
                         if data.get("filename"):
