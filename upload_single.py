@@ -472,20 +472,42 @@ def main():
         ep_num = item_data.get("episode", 1)
         caption = f"🎬 {ep_title} - Episode {ep_num}"
 
-        # --- HIGH-SPEED CONCURRENT PARALLEL UPLOADS ---
+        # --- TARGET-AWARE DEDUPLICATION & CONCURRENT PARALLEL UPLOADS ---
+        existing_tg = item_data.get("existing_telegram")
+        existing_ok = item_data.get("existing_okru")
+
+        # Determine which destinations actually require uploading
+        has_existing_tg = bool(existing_tg and (isinstance(existing_tg, dict) and existing_tg.get("message_id")))
+        has_existing_ok = bool(existing_ok and (isinstance(existing_ok, dict) and (existing_ok.get("video_id") or existing_ok.get("embed_url"))))
+
+        need_telegram = upload_target in ("both", "telegram") and not has_existing_tg
+        need_okru = upload_target in ("both", "okru") and not has_existing_ok
+
+        if has_existing_tg:
+            print(f"[*] Episode {ep_num} already exists in Telegram Channel (Msg ID: {existing_tg.get('message_id')}). Skipping duplicate Telegram upload.")
+            result["telegram"] = existing_tg
+
+        if has_existing_ok:
+            print(f"[*] Episode {ep_num} already exists on Ok.ru (Video ID: {existing_ok.get('video_id')}). Skipping duplicate Ok.ru upload.")
+            result["okru"] = existing_ok
+            if "slug" not in result and existing_ok.get("video_id"):
+                result["slug"] = existing_ok.get("video_id")
+
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if upload_target in ("both", "okru") and ok_access_token and ok_app_key and ok_app_secret:
-                fut_ok = executor.submit(upload_to_okru, temp_file, ok_access_token, ok_app_key, ok_app_secret)
-                upload_futures[fut_ok] = "okru"
-            elif upload_target in ("both", "okru") and not (ok_access_token and ok_app_key and ok_app_secret):
-                print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured. Skipping Ok.ru.")
+            if need_okru:
+                if ok_access_token and ok_app_key and ok_app_secret:
+                    fut_ok = executor.submit(upload_to_okru, temp_file, ok_access_token, ok_app_key, ok_app_secret)
+                    upload_futures[fut_ok] = "okru"
+                else:
+                    print("[WARN] Ok.ru credentials (OK_ACCESS_TOKEN, OK_APP_KEY, OK_APP_SECRET) not configured. Skipping Ok.ru.")
 
-            if upload_target in ("both", "telegram") and tg_bot_token and tg_chat_id:
-                fut_tg = executor.submit(upload_to_telegram, temp_file, safe_name, tg_bot_token, tg_chat_id, caption, tg_local_api_url)
-                upload_futures[fut_tg] = "telegram"
-            elif upload_target in ("both", "telegram") and not (tg_bot_token and tg_chat_id):
-                print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
+            if need_telegram:
+                if tg_bot_token and tg_chat_id:
+                    fut_tg = executor.submit(upload_to_telegram, temp_file, safe_name, tg_bot_token, tg_chat_id, caption, tg_local_api_url)
+                    upload_futures[fut_tg] = "telegram"
+                else:
+                    print("[WARN] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not configured. Skipping Telegram.")
 
             for fut in concurrent.futures.as_completed(upload_futures):
                 dest = upload_futures[fut]

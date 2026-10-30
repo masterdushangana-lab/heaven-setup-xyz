@@ -252,6 +252,7 @@ def main():
         if stream_res.get("subtitle_url"):
             print(f"          Subtitles: {stream_res['subtitle_url']}")
 
+        ep_rec = history.get(primary_key, {}).get("episodes", {}).get(str(ep_num))
         item_payload = {
             "key": f"megaplay_{mal_id}_ep{ep_num}",
             "anime_id": str(mal_id),
@@ -264,6 +265,9 @@ def main():
             "filename": filename,
             "quality": "1080p",
             "provider": "megaplay",
+            "upload_target": upload_target,
+            "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
+            "existing_okru": ep_rec.get("okru") if ep_rec else None,
             "mal_info": {
                 "mal_id": mal_id,
                 "title_english": anime_title,

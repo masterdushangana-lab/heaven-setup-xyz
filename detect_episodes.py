@@ -448,6 +448,7 @@ def main():
             direct_url = resolve_direct_download_url(item["anime_url"], item["session_key"])
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
             filename = format_ep_filename(safe_title, item["episode"])
+            ep_rec = get_existing_episode_record(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"])
             item_payload = {
                 "key": item["key"],
                 "title": item["title"],
@@ -457,7 +458,9 @@ def main():
                 "anime_id": item["anime_id"],
                 "anime_url": item["anime_url"],
                 "mal_info": mal_info,
-                "upload_target": upload_target
+                "upload_target": upload_target,
+                "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
+                "existing_okru": ep_rec.get("okru") if ep_rec else None
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
@@ -490,6 +493,7 @@ def main():
             direct_url = resolve_direct_download_url(item["anime_url"], session_key)
             safe_title = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', item["title"])
             filename = format_ep_filename(safe_title, item["episode"])
+            ep_rec = get_existing_episode_record(history, item["anime_id"], mal_info.get("mal_id"), item["title"], item["episode"])
             item_payload = {
                 "key": item["key"],
                 "title": item["title"],
@@ -500,7 +504,9 @@ def main():
                 "anime_url": item["anime_url"],
                 "mal_info": mal_info,
                 "new_php_rank": rank_idx,
-                "upload_target": upload_target
+                "upload_target": upload_target,
+                "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
+                "existing_okru": ep_rec.get("okru") if ep_rec else None
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)

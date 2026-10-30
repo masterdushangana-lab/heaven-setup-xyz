@@ -111,6 +111,9 @@ jobs:
 
       - name: Download, Burn Subtitle & Upload Episode
         env:
+          OK_ACCESS_TOKEN: ${{ secrets.OK_ACCESS_TOKEN }}
+          OK_APP_KEY: ${{ secrets.OK_APP_KEY || secrets.OK_APPLICATION_KEY }}
+          OK_APP_SECRET: ${{ secrets.OK_APP_SECRET || secrets.OK_APPLICATION_SECRET_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
