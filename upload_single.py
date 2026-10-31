@@ -15,6 +15,7 @@ import base64
 import hashlib
 import random
 import string
+import secrets
 import shutil
 import subprocess
 import urllib.parse
@@ -206,7 +207,10 @@ def upload_to_mp4upload(temp_file: str, safe_name: str, mp4upload_api_key: str) 
     4. Automatically parses returned filecode or scrapes newest uploaded file code from account.
     5. Returns filecode, player_url, and embed_url.
     """
-    print(f"[*] Uploading to Mp4Upload: {safe_name}")
+    # Generate random 25-character alphanumeric filename for DMCA protection & stealth
+    random_base = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(25))
+    mp4upload_filename = f"{random_base}.mp4"
+    print(f"[*] Uploading to Mp4Upload as '{mp4upload_filename}' (Original: {safe_name})")
     start_time = time.time()
 
     max_retries = 3
@@ -250,9 +254,9 @@ def upload_to_mp4upload(temp_file: str, safe_name: str, mp4upload_api_key: str) 
             "--max-time", "1800",
             "-F", f"sess_id={sess_id or ''}",
             "-F", f"key={mp4upload_api_key}",
-            "-F", f"file_title={safe_name}",
-            "-F", f"file=@{temp_file};filename={safe_name}",
-            "-F", f"file_0=@{temp_file};filename={safe_name}",
+            "-F", f"file_title={mp4upload_filename}",
+            "-F", f"file=@{temp_file};filename={mp4upload_filename}",
+            "-F", f"file_0=@{temp_file};filename={mp4upload_filename}",
             upload_endpoint
         ]
 
@@ -307,7 +311,7 @@ def upload_to_mp4upload(temp_file: str, safe_name: str, mp4upload_api_key: str) 
                 if l_data.get("status") == 200 and l_data.get("result"):
                     for f_entry in l_data["result"]:
                         # Match uploaded filename or take most recent
-                        if f_entry.get("name") in (safe_name, safe_name.replace(".mp4", "")):
+                        if f_entry.get("name") in (mp4upload_filename, mp4upload_filename.replace(".mp4", ""), safe_name, safe_name.replace(".mp4", "")):
                             filecode = f_entry.get("filecode")
                             break
                     if not filecode and l_data["result"]:
@@ -494,14 +498,12 @@ def send_admin_notification(bot_tokens_raw: str, admin_chat_id: str, message: st
 
 
 def main():
-    mp4upload_api_key = os.getenv("MP4UPLOAD_API_KEY", "").strip() or os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
+    mp4upload_api_key = os.getenv("MP4UPLOAD_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
     tg_local_api_url = os.getenv("TG_LOCAL_API_URL", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
-    if upload_target == "streamhg":
-        upload_target = "mp4upload"
     meta_b64 = os.getenv("ITEM_META_B64", "").strip()
 
     if not meta_b64:
@@ -528,14 +530,14 @@ def main():
 
         # --- TARGET-AWARE DEDUPLICATION & CONCURRENT PARALLEL UPLOADS ---
         existing_tg = item_data.get("existing_telegram")
-        existing_mp4 = item_data.get("existing_mp4upload") or item_data.get("existing_streamhg")
+        existing_mp4 = item_data.get("existing_mp4upload")
 
         # Determine which destinations actually require uploading
         has_existing_tg = bool(existing_tg and (isinstance(existing_tg, dict) and existing_tg.get("message_id")))
         has_existing_mp4 = bool(existing_mp4 and (isinstance(existing_mp4, dict) and existing_mp4.get("file_code")))
 
         need_telegram = upload_target in ("both", "telegram") and not has_existing_tg
-        need_mp4upload = upload_target in ("both", "mp4upload", "streamhg") and not has_existing_mp4
+        need_mp4upload = upload_target in ("both", "mp4upload") and not has_existing_mp4
 
         if has_existing_tg:
             print(f"[*] Episode {ep_num} already exists in Telegram Channel (Msg ID: {existing_tg.get('message_id')}). Skipping duplicate Telegram upload.")

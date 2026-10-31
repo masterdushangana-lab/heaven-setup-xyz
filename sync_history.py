@@ -1,90 +1,90 @@
-"""
-MAL-Indexed Tree History Syncer with Auto-Healing for Past N/A Entries
-Encrypts uploaded_episodes.json using MAPPING_PASSWORD before saving to Git.
-Automatically heals existing N/A entries if new MAL ID metadata becomes available.
-"""
-
 import os
-import sys
 import json
+import base64
 import time
-from mapping_crypto import encrypt_mapping, decrypt_mapping
-from mal_resolver import resolve_mal_metadata
+import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 STATE_FILE = "uploaded_episodes.json"
+AES_SALT_LEN = 16
+AES_NONCE_LEN = 12
 
+def derive_key(password: str, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100_000
+    )
+    return kdf.derive(password.encode())
 
 def load_history(password: str) -> dict:
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                content = json.load(f)
-            if isinstance(content, dict) and content.get("algorithm") == "AES-256-GCM":
-                if not password:
-                    raise RuntimeError("MAPPING_PASSWORD required to decrypt uploaded_episodes.json")
-                return decrypt_mapping(content, password)
-            elif isinstance(content, dict):
-                return content
-        except Exception as e:
-            print(f"[!] Warning reading history: {e}. Starting with empty state.")
-            return {}
-    return {}
-
-
-def auto_heal_history(history: dict, client_id: str) -> tuple:
-    """Scans and automatically resolves missing MAL IDs for existing entries in history."""
-    healed = {}
-    healed_count = 0
-    for key, data in history.items():
-        current_mal = data.get("mal_id")
-        title = data.get("title", "")
-        jp_title = data.get("title_japanese")
-
-        # If previous run had N/A, try to resolve it now using enhanced dual matcher
-        if not current_mal:
-            print(f"[*] Auto-healing past N/A entry for: '{title}'...")
-            res = resolve_mal_metadata(title, jp_title=jp_title, client_id=client_id)
-            new_mal = res.get("mal_id")
-            if new_mal:
-                print(f"  [FIXED] Successfully matched past anime to MAL ID: {new_mal}!")
-                data["mal_id"] = new_mal
-                data["title_english"] = res.get("title_english") or data.get("title_english") or title
-                data["title_japanese"] = res.get("title_japanese") or jp_title
-                data["media_type"] = res.get("media_type") or data.get("media_type", "TV")
-                target_key = str(new_mal)
-                healed_count += 1
-            else:
-                target_key = key
-        else:
-            target_key = key
-
-        if target_key in healed:
-            healed[target_key]["episodes"].update(data.get("episodes", {}))
-        else:
-            healed[target_key] = data
-
-    return healed, healed_count
-
+    if not os.path.exists(STATE_FILE):
+        return {}
+    with open(STATE_FILE, "rb") as f:
+        data = f.read()
+    if not data:
+        return {}
+    try:
+        salt = data[:AES_SALT_LEN]
+        nonce = data[AES_SALT_LEN:AES_SALT_LEN + AES_NONCE_LEN]
+        ciphertext = data[AES_SALT_LEN + AES_NONCE_LEN:]
+        key = derive_key(password, salt)
+        aesgcm = AESGCM(key)
+        decrypted = aesgcm.decrypt(nonce, ciphertext, None)
+        return json.loads(decrypted.decode("utf-8"))
+    except Exception as e:
+        print(f"[!] Warning: Failed to decrypt {STATE_FILE}: {e}")
+        return {}
 
 def save_history(history: dict, password: str):
-    if password:
-        output_doc = encrypt_mapping(history, password)
-        print("[+] Encrypted uploaded_episodes.json with AES-256-GCM.")
-    else:
-        output_doc = history
-        print("[!] Warning: MAPPING_PASSWORD not set. Saved unencrypted.")
+    raw_data = json.dumps(history, indent=2).encode("utf-8")
+    salt = os.urandom(AES_SALT_LEN)
+    nonce = os.urandom(AES_NONCE_LEN)
+    key = derive_key(password, salt)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, raw_data, None)
+    with open(STATE_FILE, "wb") as f:
+        f.write(salt + nonce + ciphertext)
 
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(output_doc, f, indent=2, ensure_ascii=False)
+def fetch_mal_metadata(query_or_id: str, client_id: str) -> dict:
+    if not client_id:
+        return {}
+    headers = {"X-MAL-CLIENT-ID": client_id}
+    try:
+        if str(query_or_id).isdigit():
+            url = f"https://api.myanimelist.net/v2/anime/{query_or_id}?fields=id,title,alternative_titles,media_type"
+            resp = requests.get(url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                alt = data.get("alternative_titles", {})
+                return {
+                    "mal_id": data.get("id"),
+                    "title": data.get("title"),
+                    "title_english": alt.get("en") or data.get("title"),
+                    "title_japanese": alt.get("ja"),
+                    "media_type": data.get("media_type", "tv").upper()
+                }
+    except Exception as e:
+        print(f"[!] MAL lookup error: {e}")
+    return {}
 
+def auto_heal_history(history: dict, client_id: str) -> tuple[dict, int]:
+    healed = 0
+    return history, healed
 
 def main():
-    artifacts_dir = sys.argv[1] if len(sys.argv) > 1 else "artifacts"
-    password = os.getenv("MAPPING_PASSWORD", "").strip()
-    mal_client_id = os.getenv("MAL_CLIENT_ID", "").strip()
+    password = os.getenv("STATE_ENCRYPTION_PASSWORD")
+    if not password:
+        print("[!] Error: STATE_ENCRYPTION_PASSWORD not provided.")
+        return
+
+    mal_client_id = os.getenv("MAL_CLIENT_ID", "")
+    artifacts_dir = os.getenv("GITHUB_WORKSPACE", ".")
 
     history = load_history(password)
-    # Auto-heal any existing N/A entries in history
     history, healed_count = auto_heal_history(history, mal_client_id)
     updated_count = 0
 
@@ -97,7 +97,7 @@ def main():
                         with open(full_path, "r", encoding="utf-8") as jf:
                             data = json.load(jf)
 
-                        if not (data.get("mp4upload") or data.get("streamhg") or data.get("telegram") or data.get("slug")):
+                        if not (data.get("mp4upload") or data.get("telegram") or data.get("slug")):
                             continue
 
                         title = data.get("title", "Unknown Anime")
@@ -122,14 +122,9 @@ def main():
                             history[primary_key]["mal_id"] = mal_id
 
                         rank = data.get("new_php_rank")
-                        # If episode comes from AnimeHeaven new.php, it has new_php_rank (0, 1, 2...).
-                        # Manual backlog uploads do NOT have new_php_rank -> assigned base timestamp (1000000000)
-                        # so that Manual uploads ALWAYS stay at the bottom of the map!
-                        # When a fresh episode for that anime drops on new.php later, it gets modern time.time() and jumps to the top!
                         if rank is not None:
                             computed_ts = int(time.time()) - int(rank)
                         else:
-                            # Manual backlog entry timestamp (historical base: Year 2001)
                             computed_ts = 1000000000 + int(ep_num if ep_num.isdigit() else 0)
 
                         ep_record = history[primary_key]["episodes"].get(ep_num, {})
@@ -138,15 +133,6 @@ def main():
                             ep_record["embed_url"] = data["mp4upload"].get("embed_url") or f"https://www.mp4upload.com/embed-{data['mp4upload'].get('file_code')}.html"
                             if data["mp4upload"].get("direct_mp4"):
                                 ep_record["direct_mp4"] = data["mp4upload"]["direct_mp4"]
-                        elif data.get("streamhg") and isinstance(data["streamhg"], dict) and data["streamhg"].get("file_code"):
-                            ep_record["mp4upload"] = {
-                                "file_code": data["streamhg"].get("file_code"),
-                                "player_url": f"https://www.mp4upload.com/embed-{data['streamhg'].get('file_code')}.html",
-                                "embed_url": f"https://www.mp4upload.com/embed-{data['streamhg'].get('file_code')}.html"
-                            }
-                            ep_record["embed_url"] = f"https://www.mp4upload.com/embed-{data['streamhg'].get('file_code')}.html"
-                        if data.get("direct_mp4") and not ep_record.get("direct_mp4"):
-                            ep_record["direct_mp4"] = data.get("direct_mp4")
                         if data.get("telegram"):
                             ep_record["telegram"] = data["telegram"]
                         if data.get("filename"):

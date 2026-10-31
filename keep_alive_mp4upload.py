@@ -205,7 +205,7 @@ def send_telegram_admin_alert(bot_tokens_raw: str, admin_chat_id: str, message: 
 
 def main():
     mapping_pass = os.getenv("MAPPING_PASSWORD", "").strip()
-    mp4upload_api_key = os.getenv("MP4UPLOAD_API_KEY", "").strip() or os.getenv("STREAMHG_API_KEY", "").strip()
+    mp4upload_api_key = os.getenv("MP4UPLOAD_API_KEY", "").strip()
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
 
@@ -227,8 +227,6 @@ def main():
             fcode = None
             if ep_info.get("mp4upload") and isinstance(ep_info["mp4upload"], dict):
                 fcode = ep_info["mp4upload"].get("file_code")
-            elif ep_info.get("streamhg") and isinstance(ep_info["streamhg"], dict):
-                fcode = ep_info["streamhg"].get("file_code")
             if fcode:
                 file_map.setdefault(fcode, []).append((mal_key, ep_num))
 

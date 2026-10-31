@@ -82,11 +82,11 @@ def is_already_uploaded(history: dict, primary_key: str, ep_num: int, upload_tar
     ep_data = entry["episodes"][ep_str]
     has_mp4upload = bool(
         (ep_data.get("mp4upload") and ep_data["mp4upload"].get("file_code")) or
-        (ep_data.get("streamhg") and ep_data["streamhg"].get("file_code"))
+        False
     )
     has_telegram = bool(ep_data.get("telegram"))
 
-    if upload_target in ("mp4upload", "streamhg"):
+    if upload_target == "mp4upload":
         return has_mp4upload
     elif upload_target == "telegram":
         return has_telegram
@@ -270,7 +270,7 @@ def main():
             "provider": "megaplay",
             "upload_target": upload_target,
             "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-            "existing_mp4upload": (ep_rec.get("mp4upload") or ep_rec.get("streamhg")) if ep_rec else None,
+            "existing_mp4upload": ep_rec.get("mp4upload") if ep_rec else None,
             "mal_info": {
                 "mal_id": mal_id,
                 "title_english": anime_title,
