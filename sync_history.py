@@ -136,6 +136,8 @@ def main():
                         if data.get("mp4upload") and isinstance(data["mp4upload"], dict) and data["mp4upload"].get("file_code"):
                             ep_record["mp4upload"] = data["mp4upload"]
                             ep_record["embed_url"] = data["mp4upload"].get("embed_url") or f"https://www.mp4upload.com/embed-{data['mp4upload'].get('file_code')}.html"
+                            if data["mp4upload"].get("direct_mp4"):
+                                ep_record["direct_mp4"] = data["mp4upload"]["direct_mp4"]
                         elif data.get("streamhg") and isinstance(data["streamhg"], dict) and data["streamhg"].get("file_code"):
                             ep_record["mp4upload"] = {
                                 "file_code": data["streamhg"].get("file_code"),
@@ -143,6 +145,8 @@ def main():
                                 "embed_url": f"https://www.mp4upload.com/embed-{data['streamhg'].get('file_code')}.html"
                             }
                             ep_record["embed_url"] = f"https://www.mp4upload.com/embed-{data['streamhg'].get('file_code')}.html"
+                        if data.get("direct_mp4") and not ep_record.get("direct_mp4"):
+                            ep_record["direct_mp4"] = data.get("direct_mp4")
                         if data.get("telegram"):
                             ep_record["telegram"] = data["telegram"]
                         if data.get("filename"):

@@ -325,14 +325,39 @@ def upload_to_mp4upload(temp_file: str, safe_name: str, mp4upload_api_key: str) 
         embed_url = f"https://www.mp4upload.com/embed-{filecode}.html"
         print(f"[SUCCESS] Uploaded to Mp4Upload in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
 
+        # Attempt immediate direct mp4 extraction from the newly created embed
+        direct_mp4 = None
+        try:
+            req_embed = urllib.request.Request(embed_url, headers={"User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/"})
+            with urllib.request.urlopen(req_embed, timeout=12) as em_resp:
+                em_html = em_resp.read().decode("utf-8", errors="ignore")
+                if packer.detect(em_html):
+                    unp = packer.unpack(em_html)
+                    m_p = re.search(r'player\.src\(\"([^\"]+?\.mp4[^\"]*)\"', unp) or \
+                          re.search(r'src:\s*\"([^\"]+?\.mp4[^\"]*)\"', unp) or \
+                          re.search(r'\"(https?://[^\"]+?\.mp4)\"', unp)
+                    if m_p:
+                        direct_mp4 = m_p.group(1)
+                if not direct_mp4:
+                    m_pl = re.search(r'<source\s+src=[\"\'](https?://[^\s\"\'\<\>]+?\.mp4)[\"\']', em_html)
+                    if m_pl:
+                        direct_mp4 = m_pl.group(1)
+        except Exception:
+            pass
+
+        if direct_mp4:
+            print(f"  [+] Direct MP4 Extracted & Saved: {direct_mp4[:60]}...")
+
         return {
             "mp4upload": {
                 "file_code": filecode,
                 "player_url": embed_url,
-                "embed_url": embed_url
+                "embed_url": embed_url,
+                "direct_mp4": direct_mp4
             },
             "slug": filecode,
-            "embed_url": embed_url
+            "embed_url": embed_url,
+            "direct_mp4": direct_mp4
         }
 
     raise RuntimeError(f"All {max_retries} Mp4Upload upload attempts failed. Last error: {last_err}")
