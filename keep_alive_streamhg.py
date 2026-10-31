@@ -63,13 +63,13 @@ def ping_streamhg_video(file_code: str, api_key: str = "") -> dict:
             pass
 
     # Fallback / Secondary: HTTP GET directly to embed player endpoint
-    embed_url = f"https://streamhg.com/e/{file_code}"
+    embed_url = f"https://hgcloud.to/e/{file_code}"
     try:
         req = urllib.request.Request(
             embed_url,
             headers={
                 "User-Agent": USER_AGENT,
-                "Referer": "https://streamhg.com/",
+                "Referer": "https://hgcloud.to/",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
         )

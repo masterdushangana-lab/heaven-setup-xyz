@@ -135,7 +135,7 @@ def main():
                         ep_record = history[primary_key]["episodes"].get(ep_num, {})
                         if data.get("streamhg") and isinstance(data["streamhg"], dict) and data["streamhg"].get("file_code"):
                             ep_record["streamhg"] = data["streamhg"]
-                            ep_record["embed_url"] = data["streamhg"].get("embed_url") or f"https://streamhg.com/e/{data['streamhg'].get('file_code')}"
+                            ep_record["embed_url"] = data["streamhg"].get("embed_url") or f"https://hgcloud.to/e/{data['streamhg'].get('file_code')}"
                         if data.get("telegram"):
                             ep_record["telegram"] = data["telegram"]
                         if data.get("filename"):

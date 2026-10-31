@@ -286,7 +286,7 @@ def upload_to_streamhg(temp_file: str, safe_name: str, streamhg_api_key: str) ->
             continue
 
         elapsed = time.time() - start_time
-        embed_url = f"https://streamhg.com/e/{filecode}"
+        embed_url = f"https://hgcloud.to/e/{filecode}"
         print(f"[SUCCESS] Uploaded to StreamHG in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
 
         return {
@@ -482,7 +482,7 @@ def main():
             hg_code = existing_hg.get("file_code")
             print(f"[*] Episode {ep_num} already exists on StreamHG (File Code: {hg_code}). Skipping duplicate StreamHG upload.")
             result["streamhg"] = existing_hg
-            result["embed_url"] = f"https://streamhg.com/e/{hg_code}"
+            result["embed_url"] = f"https://hgcloud.to/e/{hg_code}"
 
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
