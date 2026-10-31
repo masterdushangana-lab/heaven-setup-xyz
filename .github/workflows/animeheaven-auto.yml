@@ -1,4 +1,4 @@
-name: AnimeHeaven Ingestion & Abyss Upload (MAL Indexed + Encrypted)
+name: AnimeHeaven Ingestion & Mp4Upload (MAL Indexed + Encrypted)
 
 on:
   schedule:
@@ -22,13 +22,13 @@ on:
         default: 'all'
         type: string
       upload_target:
-        description: 'Where to upload: both, streamhg, or telegram'
+        description: 'Where to upload: both, mp4upload, or telegram'
         required: false
         default: 'both'
         type: choice
         options:
           - both
-          - streamhg
+          - mp4upload
           - telegram
 
 concurrency:
@@ -57,7 +57,7 @@ jobs:
       - name: Detect episodes
         id: detect_step
         env:
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
+          MP4UPLOAD_API_KEY: ${{ secrets.MP4UPLOAD_API_KEY || secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TARGET_ANIME_URL: ${{ inputs.target_anime_url }}
           TARGET_MAL_ID: ${{ inputs.target_mal_id }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
@@ -116,7 +116,7 @@ jobs:
 
       - name: Upload Episode
         env:
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
+          MP4UPLOAD_API_KEY: ${{ secrets.MP4UPLOAD_API_KEY || secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}

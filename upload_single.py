@@ -1,8 +1,8 @@
 """
-Single Episode Direct Uploader to StreamHG and Telegram
+Single Episode Direct Uploader to Mp4Upload and Telegram
 1. High-Speed Subtitle Burning + H.264 compression (<500MB).
-2. StreamHG High-Speed Video Upload with API Key.
-3. Concurrent Parallel Upload to StreamHG and Telegram Channel.
+2. Mp4Upload Direct High-Speed Video Upload with API Key + Session ID.
+3. Concurrent Parallel Upload to Mp4Upload and Telegram Channel.
 """
 
 import os
@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 import concurrent.futures
 from pathlib import Path
+import packer
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 MEGAPLAY_SIGNING_KEY = b'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s'
@@ -196,101 +197,136 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     return temp_file
 
 
-def upload_to_streamhg(temp_file: str, safe_name: str, streamhg_api_key: str) -> dict:
+def upload_to_mp4upload(temp_file: str, safe_name: str, mp4upload_api_key: str) -> dict:
     """
-    Direct High-Speed Uploader to StreamHG (streamhg.com).
-    1. Requests designated upload server endpoint via GET https://streamhgapi.com/api/upload/server?key={key}
-    2. Uploads video via multipart POST with IPv4 force, realistic User-Agent, and SSL tolerance.
+    Direct High-Speed Uploader to Mp4Upload (mp4upload.com).
+    1. Requests designated upload server endpoint & sess_id via GET https://www.mp4upload.com/api/upload/server?key={key}
+    2. Uploads video via multipart POST to allocated CGI endpoint (with sess_id, file, and file_0 fallback).
     3. Retries up to 3 times with fresh endpoints if an individual storage node times out.
-    4. Returns filecode, player_url, and embed_url.
+    4. Automatically parses returned filecode or scrapes newest uploaded file code from account.
+    5. Returns filecode, player_url, and embed_url.
     """
-    print(f"[*] Uploading to StreamHG: {safe_name}")
+    print(f"[*] Uploading to Mp4Upload: {safe_name}")
     start_time = time.time()
-    
+
     max_retries = 3
     last_err = None
 
     for attempt in range(1, max_retries + 1):
         if attempt > 1:
-            print(f"[*] StreamHG upload retry {attempt}/{max_retries}...")
+            print(f"[*] Mp4Upload upload retry {attempt}/{max_retries}...")
 
-        # 1. Obtain fresh upload server endpoint
+        # 1. Obtain fresh upload server endpoint & sess_id from Mp4Upload API
         s_data = None
-        api_endpoints = [
-            f"https://streamhgapi.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}",
-            f"https://api.streamwish.com/api/upload/server?key={urllib.parse.quote(streamhg_api_key, safe='')}"
-        ]
-        
+        server_api = f"https://www.mp4upload.com/api/upload/server?key={urllib.parse.quote(mp4upload_api_key, safe='')}"
+
         upload_endpoint = None
-        for server_api in api_endpoints:
-            try:
-                req_server = urllib.request.Request(server_api, headers={"User-Agent": USER_AGENT})
-                with urllib.request.urlopen(req_server, timeout=25) as resp:
-                    s_data = json.loads(resp.read().decode("utf-8"))
-                if s_data and s_data.get("result"):
-                    upload_endpoint = s_data["result"]
-                    break
-            except Exception as ep_err:
-                print(f"[!] Warning fetching upload server from {server_api}: {ep_err}")
+        sess_id = None
+        try:
+            req_server = urllib.request.Request(server_api, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req_server, timeout=25) as resp:
+                s_data = json.loads(resp.read().decode("utf-8"))
+            if s_data and s_data.get("status") == 200:
+                upload_endpoint = s_data.get("result")
+                sess_id = s_data.get("sess_id")
+        except Exception as ep_err:
+            print(f"[!] Warning fetching upload server from Mp4Upload: {ep_err}")
 
         if not upload_endpoint:
-            last_err = RuntimeError(f"StreamHG did not return valid upload server: {s_data}")
+            last_err = RuntimeError(f"Mp4Upload did not return valid upload server: {s_data}")
             time.sleep(3)
             continue
 
-        print(f"[*] StreamHG upload server allocated: {upload_endpoint}")
+        print(f"[*] Mp4Upload upload server allocated: {upload_endpoint} (sess_id: {sess_id})")
 
-        # 2. Curl command with IPv4 force, browser User-Agent, and robust timeouts
+        # 2. Curl command with IPv4 force, browser User-Agent, and robust multipart fields
         cmd_up = [
             "curl", "-sS",
-            "-4",  # Force IPv4 (Prevents GitHub Actions IPv6 blackhole timeouts)
-            "-A", USER_AGENT,  # Realistic User-Agent (bypasses curl anti-bot blocks)
+            "-4",  # Force IPv4
+            "-A", USER_AGENT,
             "-H", "Expect:",
-            "-k",  # Insecure (accept wildcard/storage node SSL certs without hanging)
-            "--connect-timeout", "60",  # 60s connection timeout
-            "--max-time", "1800",  # 30min transfer timeout for large files
-            "-F", f"key={streamhg_api_key}",
+            "-k",  # Insecure (accept storage node SSL certs)
+            "--connect-timeout", "60",
+            "--max-time", "1800",
+            "-F", f"sess_id={sess_id or ''}",
+            "-F", f"key={mp4upload_api_key}",
             "-F", f"file_title={safe_name}",
             "-F", f"file=@{temp_file};filename={safe_name}",
+            "-F", f"file_0=@{temp_file};filename={safe_name}",
             upload_endpoint
         ]
 
         proc = subprocess.run(cmd_up, capture_output=True, text=True)
         if proc.returncode != 0:
-            last_err = RuntimeError(f"StreamHG upload curl error: {proc.stderr.strip()}")
-            print(f"[!] StreamHG upload curl attempt {attempt} failed: {proc.stderr.strip()}")
+            last_err = RuntimeError(f"Mp4Upload upload curl error: {proc.stderr.strip()}")
+            print(f"[!] Mp4Upload upload curl attempt {attempt} failed: {proc.stderr.strip()}")
             time.sleep(4)
             continue
 
-        try:
-            data = json.loads(proc.stdout)
-        except Exception as e:
-            last_err = RuntimeError(f"Failed to parse StreamHG response JSON: {proc.stdout[:250]}")
-            print(f"[!] StreamHG response JSON error attempt {attempt}: {proc.stdout[:150]}")
-            time.sleep(4)
-            continue
-
+        resp_text = proc.stdout.strip()
         filecode = None
-        files_list = data.get("files", [])
-        if files_list and isinstance(files_list, list) and len(files_list) > 0:
-            filecode = files_list[0].get("filecode")
-        elif isinstance(data.get("result"), dict) and data["result"].get("filecode"):
-            filecode = data["result"]["filecode"]
-        elif data.get("filecode"):
-            filecode = data.get("filecode")
+
+        # Check JSON response
+        try:
+            data = json.loads(resp_text)
+            if isinstance(data, list) and len(data) > 0 and data[0].get("file_code"):
+                filecode = data[0].get("file_code")
+            elif isinstance(data, dict):
+                files_list = data.get("files", [])
+                if files_list and isinstance(files_list, list) and len(files_list) > 0:
+                    filecode = files_list[0].get("filecode") or files_list[0].get("file_code")
+                elif isinstance(data.get("result"), dict):
+                    filecode = data["result"].get("filecode") or data["result"].get("file_code")
+                elif data.get("filecode") or data.get("file_code"):
+                    filecode = data.get("filecode") or data.get("file_code")
+        except Exception:
+            pass
+
+        # Check HTML / text textarea or regex match
+        if not filecode:
+            # Pattern 1: textarea or input with name='fn' or 'file_code'
+            m_fn = re.search(r"<(?:textarea|input)[^>]+name=['\"](?:fn|file_code)['\"][^>]*>([^<]+)</", resp_text, re.IGNORECASE) or \
+                   re.search(r"value=['\"]([a-zA-Z0-9]{8,20})['\"][^>]+name=['\"](?:fn|file_code)['\"]", resp_text, re.IGNORECASE)
+            if m_fn:
+                filecode = m_fn.group(1).strip()
 
         if not filecode:
-            last_err = RuntimeError(f"Unexpected StreamHG response (missing filecode): {data}")
-            print(f"[!] StreamHG attempt {attempt} missing filecode in response: {data}")
+            # Pattern 2: Direct mp4upload URL or embed URL inside response
+            m_url = re.search(r"mp4upload\.com/(?:embed-)?([a-zA-Z0-9]{8,20})", resp_text)
+            if m_url:
+                filecode = m_url.group(1).strip()
+
+        # Fallback query via File List API if CGI response was indirect redirect
+        if not filecode and mp4upload_api_key:
+            time.sleep(2)
+            try:
+                list_url = f"https://www.mp4upload.com/api/file/list?key={urllib.parse.quote(mp4upload_api_key, safe='')}&per_page=5"
+                req_list = urllib.request.Request(list_url, headers={"User-Agent": USER_AGENT})
+                with urllib.request.urlopen(req_list, timeout=15) as l_resp:
+                    l_data = json.loads(l_resp.read().decode("utf-8"))
+                if l_data.get("status") == 200 and l_data.get("result"):
+                    for f_entry in l_data["result"]:
+                        # Match uploaded filename or take most recent
+                        if f_entry.get("name") in (safe_name, safe_name.replace(".mp4", "")):
+                            filecode = f_entry.get("filecode")
+                            break
+                    if not filecode and l_data["result"]:
+                        filecode = l_data["result"][0].get("filecode")
+            except Exception as list_err:
+                print(f"[!] Warning fallback list check: {list_err}")
+
+        if not filecode:
+            last_err = RuntimeError(f"Unexpected Mp4Upload response (missing filecode): {resp_text[:300]}")
+            print(f"[!] Mp4Upload attempt {attempt} missing filecode in response: {resp_text[:200]}")
             time.sleep(4)
             continue
 
         elapsed = time.time() - start_time
-        embed_url = f"https://hgcloud.to/e/{filecode}"
-        print(f"[SUCCESS] Uploaded to StreamHG in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
+        embed_url = f"https://www.mp4upload.com/embed-{filecode}.html"
+        print(f"[SUCCESS] Uploaded to Mp4Upload in {elapsed:.1f}s! File Code: {filecode} | Embed: {embed_url}")
 
         return {
-            "streamhg": {
+            "mp4upload": {
                 "file_code": filecode,
                 "player_url": embed_url,
                 "embed_url": embed_url
@@ -299,7 +335,7 @@ def upload_to_streamhg(temp_file: str, safe_name: str, streamhg_api_key: str) ->
             "embed_url": embed_url
         }
 
-    raise RuntimeError(f"All {max_retries} StreamHG upload attempts failed. Last error: {last_err}")
+    raise RuntimeError(f"All {max_retries} Mp4Upload upload attempts failed. Last error: {last_err}")
 
 
 def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
@@ -433,12 +469,14 @@ def send_admin_notification(bot_tokens_raw: str, admin_chat_id: str, message: st
 
 
 def main():
-    streamhg_api_key = os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
+    mp4upload_api_key = os.getenv("MP4UPLOAD_API_KEY", "").strip() or os.getenv("STREAMHG_API_KEY", "").strip() or os.getenv("ABYSS_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
     tg_local_api_url = os.getenv("TG_LOCAL_API_URL", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
+    if upload_target == "streamhg":
+        upload_target = "mp4upload"
     meta_b64 = os.getenv("ITEM_META_B64", "").strip()
 
     if not meta_b64:
@@ -465,33 +503,33 @@ def main():
 
         # --- TARGET-AWARE DEDUPLICATION & CONCURRENT PARALLEL UPLOADS ---
         existing_tg = item_data.get("existing_telegram")
-        existing_hg = item_data.get("existing_streamhg")
+        existing_mp4 = item_data.get("existing_mp4upload") or item_data.get("existing_streamhg")
 
         # Determine which destinations actually require uploading
         has_existing_tg = bool(existing_tg and (isinstance(existing_tg, dict) and existing_tg.get("message_id")))
-        has_existing_hg = bool(existing_hg and (isinstance(existing_hg, dict) and existing_hg.get("file_code")))
+        has_existing_mp4 = bool(existing_mp4 and (isinstance(existing_mp4, dict) and existing_mp4.get("file_code")))
 
         need_telegram = upload_target in ("both", "telegram") and not has_existing_tg
-        need_streamhg = upload_target in ("both", "streamhg") and not has_existing_hg
+        need_mp4upload = upload_target in ("both", "mp4upload", "streamhg") and not has_existing_mp4
 
         if has_existing_tg:
             print(f"[*] Episode {ep_num} already exists in Telegram Channel (Msg ID: {existing_tg.get('message_id')}). Skipping duplicate Telegram upload.")
             result["telegram"] = existing_tg
 
-        if has_existing_hg:
-            hg_code = existing_hg.get("file_code")
-            print(f"[*] Episode {ep_num} already exists on StreamHG (File Code: {hg_code}). Skipping duplicate StreamHG upload.")
-            result["streamhg"] = existing_hg
-            result["embed_url"] = f"https://hgcloud.to/e/{hg_code}"
+        if has_existing_mp4:
+            mp4_code = existing_mp4.get("file_code")
+            print(f"[*] Episode {ep_num} already exists on Mp4Upload (File Code: {mp4_code}). Skipping duplicate Mp4Upload upload.")
+            result["mp4upload"] = existing_mp4
+            result["embed_url"] = f"https://www.mp4upload.com/embed-{mp4_code}.html"
 
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            if need_streamhg:
-                if streamhg_api_key:
-                    fut_hg = executor.submit(upload_to_streamhg, temp_file, safe_name, streamhg_api_key)
-                    upload_futures[fut_hg] = "streamhg"
+            if need_mp4upload:
+                if mp4upload_api_key:
+                    fut_mp4 = executor.submit(upload_to_mp4upload, temp_file, safe_name, mp4upload_api_key)
+                    upload_futures[fut_mp4] = "mp4upload"
                 else:
-                    print("[WARN] STREAMHG_API_KEY not configured. Skipping StreamHG.")
+                    print("[WARN] MP4UPLOAD_API_KEY not configured. Skipping Mp4Upload.")
 
             if need_telegram:
                 if tg_bot_token and tg_chat_id:
@@ -504,7 +542,7 @@ def main():
                 dest = upload_futures[fut]
                 try:
                     res = fut.result()
-                    if dest == "streamhg" and res:
+                    if dest == "mp4upload" and res:
                         result.update(res)
                     elif dest == "telegram" and res:
                         result["telegram"] = res
@@ -513,16 +551,16 @@ def main():
                     if upload_target == dest:
                         raise
 
-        if upload_target == "both" and not (result.get("streamhg") or result.get("telegram")):
-            raise RuntimeError("Both StreamHG and Telegram uploads failed.")
+        if upload_target == "both" and not (result.get("mp4upload") or result.get("telegram")):
+            raise RuntimeError("Both Mp4Upload and Telegram uploads failed.")
 
         # Admin Completion Notification (Multi-Bot Failover Pool)
         if tg_bot_token and tg_admin_chat_id:
             size_mb = item_data.get("size_mb", 0)
-            slug = result.get("slug") or (result.get("streamhg", {}).get("file_code") if isinstance(result.get("streamhg"), dict) else "")
+            slug = result.get("slug") or (result.get("mp4upload", {}).get("file_code") if isinstance(result.get("mp4upload"), dict) else "")
             tg_info = result.get("telegram")
             tg_post = tg_info.get("post_url") if isinstance(tg_info, dict) else ""
-            slug_str = f" | ⚡ StreamHG: <code>{slug}</code>" if slug else ""
+            slug_str = f" | ⚡ Mp4Upload: <code>{slug}</code>" if slug else ""
             tg_str = f" | ✈️ <a href='{tg_post}'>Telegram Post</a>" if tg_post else ""
 
             admin_alert = (

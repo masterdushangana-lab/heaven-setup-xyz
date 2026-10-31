@@ -1,4 +1,4 @@
-name: MegaPlay Direct MAL Ingestion & Abyss Upload (1080p Hardsub + Encrypted)
+name: MegaPlay Direct MAL Ingestion & Mp4Upload (1080p Hardsub + Encrypted)
 
 on:
   workflow_dispatch:
@@ -13,13 +13,13 @@ on:
         default: '1'
         type: string
       upload_target:
-        description: 'Where to upload: both, streamhg, or telegram'
+        description: 'Where to upload: both, mp4upload, or telegram'
         required: false
         default: 'both'
         type: choice
         options:
           - both
-          - streamhg
+          - mp4upload
           - telegram
 
 concurrency:
@@ -109,7 +109,7 @@ jobs:
 
       - name: Download, Burn Subtitle & Upload Episode
         env:
-          STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
+          MP4UPLOAD_API_KEY: ${{ secrets.MP4UPLOAD_API_KEY || secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
