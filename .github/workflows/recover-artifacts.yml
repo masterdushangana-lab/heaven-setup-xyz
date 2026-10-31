@@ -1,0 +1,102 @@
+name: Recover & Sync Artifacts (Emergency Rescue)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_run_id:
+        description: 'Specific Action Run ID to recover (e.g. 11612345678). Leave blank to auto-detect latest run.'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: animeheaven-pipeline
+  cancel-in-progress: false
+
+jobs:
+  recover-and-sync:
+    name: Download Artifacts & Re-Sync History
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install cryptography requests
+
+      - name: Download Artifacts from Target Run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p downloaded_artifacts
+          RUN_ID="${{ inputs.target_run_id }}"
+          if [ -z "$RUN_ID" ]; then
+            echo "[*] No Run ID provided. Fetching most recent workflow run..."
+            RUN_ID=$(gh run list --limit 1 --json databaseId -q ".[0].databaseId")
+          fi
+
+          echo "[*] Downloading all artifacts from Run ID: $RUN_ID..."
+          gh run download "$RUN_ID" --dir downloaded_artifacts || true
+
+          echo "[*] Downloaded artifacts directory tree:"
+          find downloaded_artifacts -type f -name "*.json" | head -n 50
+
+      - name: Sync History & Commit to Git
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAX_RETRIES=5
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "[*] Syncing history and pushing to main (Attempt $i/$MAX_RETRIES)..."
+            
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Run sync script to merge downloaded artifacts into uploaded_episodes.json
+            python sync_history.py downloaded_artifacts
+
+            # Stage changes
+            git add uploaded_episodes.json
+
+            # Check if there are any changes to commit
+            if git diff --staged --quiet; then
+              echo "[i] No new changes to commit (history already up to date)."
+              SUCCESS=true
+              break
+            fi
+
+            # Commit changes
+            git commit -m "Auto: Recovered and synced uploaded episodes history"
+
+            # Attempt push
+            if git push origin main; then
+              echo "[SUCCESS] Successfully pushed recovered history to origin/main!"
+              SUCCESS=true
+              break
+            fi
+
+            echo "[WARN] Push rejected due to concurrent remote changes. Retrying in 3s..."
+            sleep 3
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "[ERROR] Failed to push history to GitHub after $MAX_RETRIES attempts."
+            exit 1
+          fi

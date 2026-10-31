@@ -52,7 +52,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install cryptography
-        run: pip install cryptography
+        run: pip install cryptography requests
 
       - name: Detect episodes
         id: detect_step
@@ -164,7 +164,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install cryptography
-        run: pip install cryptography
+        run: pip install cryptography requests
 
       - name: Sync history & Commit
         env:
