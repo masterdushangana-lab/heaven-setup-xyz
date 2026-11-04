@@ -72,8 +72,15 @@ def get_telegram_download_url(file_id: str, bot_tokens: List[str], local_api_url
                     # Direct file on local bot API server
                     return f"{local_api_url.rstrip('/')}/file/bot{token}/{file_path}"
                 return f"https://api.telegram.org/file/bot{token}/{file_path}"
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8")
+            except Exception:
+                err_body = str(e)
+            print(f"  [!] Telegram getFile via Bot #{idx+1} warning: {e} -> {err_body}")
+            time.sleep(1)
         except Exception as e:
-            print(f"[!] Telegram getFile via Bot #{idx+1} warning: {e}")
+            print(f"  [!] Telegram getFile via Bot #{idx+1} warning: {e}")
             time.sleep(1)
     return None
 
