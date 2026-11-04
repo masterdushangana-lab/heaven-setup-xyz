@@ -511,8 +511,8 @@ def main():
                 "new_php_rank": rank_idx,
                 "upload_target": upload_target,
                 "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-                "existing_abyss": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
-                "existing_mp4upload": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload"))
+                "existing_abyss": (ep_rec.get("abyss") or ep_rec.get("slug") or ep_rec.get("mp4upload")) if ep_rec else None,
+                "existing_mp4upload": (ep_rec.get("abyss") or ep_rec.get("slug") or ep_rec.get("mp4upload")) if ep_rec else None
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)

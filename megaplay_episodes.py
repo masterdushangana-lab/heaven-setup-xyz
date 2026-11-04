@@ -271,8 +271,8 @@ def main():
             "provider": "megaplay",
             "upload_target": upload_target,
             "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-            "existing_abyss": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
-            "existing_mp4upload": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
+            "existing_abyss": (ep_rec.get("abyss") or ep_rec.get("slug") or ep_rec.get("mp4upload")) if ep_rec else None,
+            "existing_mp4upload": (ep_rec.get("abyss") or ep_rec.get("slug") or ep_rec.get("mp4upload")) if ep_rec else None,
             "mal_info": {
                 "mal_id": mal_id,
                 "title_english": anime_title,
