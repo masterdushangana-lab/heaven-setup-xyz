@@ -1,4 +1,4 @@
-name: Mp4Upload Inactivity Protection & Keep-Alive
+name: Abyss Inactivity Protection & Keep-Alive
 
 on:
   schedule:
@@ -6,12 +6,12 @@ on:
   workflow_dispatch: # Allows manual trigger anytime from GitHub UI or Portal
 
 concurrency:
-  group: mp4upload-keepalive
+  group: abyss-keepalive
   cancel-in-progress: true
 
 jobs:
   keepalive:
-    name: Ping All Mp4Upload Videos
+    name: Ping All Abyss Videos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -33,8 +33,8 @@ jobs:
       - name: Run Keep-Alive Ping Bot
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
-          MP4UPLOAD_API_KEY: ${{ secrets.MP4UPLOAD_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
         run: |
-          python keep_alive_mp4upload.py
+          python keep_alive_abyss.py

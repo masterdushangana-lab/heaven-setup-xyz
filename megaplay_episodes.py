@@ -80,18 +80,19 @@ def is_already_uploaded(history: dict, primary_key: str, ep_num: int, upload_tar
         return False
 
     ep_data = entry["episodes"][ep_str]
-    has_mp4upload = bool(
-        (ep_data.get("mp4upload") and ep_data["mp4upload"].get("file_code")) or
-        False
+    has_abyss = bool(
+        (ep_data.get("abyss") and (ep_data["abyss"].get("slug") or ep_data["abyss"].get("file_id"))) or
+        (ep_data.get("slug")) or
+        (ep_data.get("mp4upload") and ep_data["mp4upload"].get("file_code"))
     )
     has_telegram = bool(ep_data.get("telegram"))
 
-    if upload_target == "mp4upload":
-        return has_mp4upload
+    if upload_target in ("abyss", "mp4upload"):
+        return has_abyss
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        return has_mp4upload and has_telegram
+        return has_abyss and has_telegram
     return False
 
 
@@ -270,7 +271,8 @@ def main():
             "provider": "megaplay",
             "upload_target": upload_target,
             "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-            "existing_mp4upload": ep_rec.get("mp4upload") if ep_rec else None,
+            "existing_abyss": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
+            "existing_mp4upload": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
             "mal_info": {
                 "mal_id": mal_id,
                 "title_english": anime_title,

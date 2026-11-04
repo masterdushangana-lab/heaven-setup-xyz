@@ -118,6 +118,7 @@ def main():
 
                             # Verify that this is an episode result artifact
                             has_video_upload = bool(
+                                data.get("abyss") or
                                 data.get("mp4upload") or 
                                 data.get("streamhg") or 
                                 data.get("telegram") or 
@@ -158,8 +159,20 @@ def main():
 
                             ep_record = history[primary_key]["episodes"].get(ep_num, {})
 
-                            # 1. Mp4Upload Support
-                            if data.get("mp4upload") and isinstance(data["mp4upload"], dict) and data["mp4upload"].get("file_code"):
+                            # 1. Abyss Support
+                            if data.get("abyss") and isinstance(data["abyss"], dict):
+                                ab_slug = data["abyss"].get("slug") or data["abyss"].get("file_id")
+                                if ab_slug:
+                                    ep_record["abyss"] = {
+                                        "slug": ab_slug,
+                                        "file_id": ab_slug,
+                                        "embed_url": data["abyss"].get("embed_url") or f"https://player.abyssplayer.com/{ab_slug}"
+                                    }
+                                    ep_record["slug"] = ab_slug
+                                    ep_record["embed_url"] = f"https://player.abyssplayer.com/{ab_slug}"
+
+                            # 2. Legacy Mp4Upload Support (auto-convert slug/embed)
+                            elif data.get("mp4upload") and isinstance(data["mp4upload"], dict) and data["mp4upload"].get("file_code"):
                                 ep_record["mp4upload"] = data["mp4upload"]
                                 fcode = data["mp4upload"]["file_code"]
                                 ep_record["embed_url"] = data["mp4upload"].get("embed_url") or f"https://www.mp4upload.com/embed-{fcode}.html"
@@ -167,18 +180,17 @@ def main():
                                 if data["mp4upload"].get("direct_mp4"):
                                     ep_record["direct_mp4"] = data["mp4upload"]["direct_mp4"]
 
-                            # 2. StreamHG Support
-                            elif data.get("streamhg") and isinstance(data["streamhg"], dict) and data["streamhg"].get("file_code"):
-                                ep_record["streamhg"] = data["streamhg"]
-                                fcode = data["streamhg"]["file_code"]
-                                ep_record["embed_url"] = f"https://hgcloud.to/e/{fcode}"
-                                ep_record["slug"] = fcode
-
                             # 3. Fallback embed / slug
+                            elif data.get("slug"):
+                                ep_record["slug"] = data["slug"]
+                                ep_record["embed_url"] = data.get("embed_url") or f"https://player.abyssplayer.com/{data['slug']}"
+                                ep_record["abyss"] = {
+                                    "slug": data["slug"],
+                                    "file_id": data["slug"],
+                                    "embed_url": ep_record["embed_url"]
+                                }
                             elif data.get("embed_url") and not ep_record.get("embed_url"):
                                 ep_record["embed_url"] = data["embed_url"]
-                            if data.get("slug") and not ep_record.get("slug"):
-                                ep_record["slug"] = data["slug"]
 
                             # 4. Telegram Backup Record
                             if data.get("telegram"):
@@ -194,7 +206,7 @@ def main():
                             history[primary_key]["episodes"][ep_num] = ep_record
                             updated_count += 1
 
-                            provider = "Mp4Upload" if "mp4upload" in ep_record else ("StreamHG" if "streamhg" in ep_record else "Embed")
+                            provider = "Abyss" if "abyss" in ep_record else ("Mp4Upload" if "mp4upload" in ep_record else "Embed")
                             f_code = ep_record.get("slug") or "N/A"
                             has_tg = bool(ep_record.get("telegram"))
                             print(f"[+] Mapped MAL[{primary_key}] -> Ep {ep_num} -> {provider}: {f_code} | Telegram: {has_tg}")

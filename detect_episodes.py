@@ -220,26 +220,27 @@ def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[i
 def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num, upload_target: str = "both") -> bool:
     """
     Target-Aware Deduplication check:
-    - If upload_target == 'mp4upload': Only checks if Mp4Upload file exists.
+    - If upload_target == 'abyss': Only checks if Abyss file exists.
     - If upload_target == 'telegram': Only checks if Telegram post already exists.
-    - If upload_target == 'both': Returns True only if BOTH Mp4Upload and Telegram already exist!
+    - If upload_target == 'both': Returns True only if BOTH Abyss and Telegram already exist!
     """
     ep_record = get_existing_episode_record(history, anime_id, mal_id, anime_title, episode_num)
     if not ep_record:
         return False
 
-    has_mp4upload = bool(
-        (ep_record.get("mp4upload") and ep_record["mp4upload"].get("file_code")) or
-        False
+    has_abyss = bool(
+        (ep_record.get("abyss") and (ep_record["abyss"].get("slug") or ep_record["abyss"].get("file_id"))) or
+        (ep_record.get("slug")) or
+        (ep_record.get("mp4upload") and ep_record["mp4upload"].get("file_code"))
     )
     has_telegram = bool(ep_record.get("telegram"))
 
-    if upload_target == "mp4upload":
-        return has_mp4upload
+    if upload_target in ("abyss", "mp4upload"):
+        return has_abyss
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        return has_mp4upload and has_telegram
+        return has_abyss and has_telegram
 
     return True
 
@@ -463,7 +464,8 @@ def main():
                 "mal_info": mal_info,
                 "upload_target": upload_target,
                 "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-                "existing_mp4upload": ep_rec.get("mp4upload") if ep_rec else None
+                "existing_abyss": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
+                "existing_mp4upload": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload"))
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
@@ -509,7 +511,8 @@ def main():
                 "new_php_rank": rank_idx,
                 "upload_target": upload_target,
                 "existing_telegram": ep_rec.get("telegram") if ep_rec else None,
-                "existing_mp4upload": ep_rec.get("mp4upload") if ep_rec else None
+                "existing_abyss": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload")),
+                "existing_mp4upload": ep_rec.get("abyss") if ep_rec else (ep_rec.get("slug") or ep_rec.get("mp4upload"))
             }
             item_payload["meta_b64"] = base64.b64encode(json.dumps(item_payload).encode("utf-8")).decode("utf-8")
             pending.append(item_payload)
