@@ -20,7 +20,7 @@ import random
 import subprocess
 import urllib.parse
 import urllib.request
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from mapping_crypto import encrypt_mapping, decrypt_mapping
 
 STATE_FILE = "uploaded_episodes.json"
