@@ -24,6 +24,7 @@ from typing import Dict, Any, List, Optional
 from mapping_crypto import encrypt_mapping, decrypt_mapping
 
 STATE_FILE = "uploaded_episodes.json"
+MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", "18000"))  # Default 5h (18,000s) out of 6h GitHub limit
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
@@ -165,6 +166,7 @@ def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> Optio
 
 
 def main():
+    script_start_time = time.time()
     password = os.getenv("MAPPING_PASSWORD", "").strip()
     abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip() or os.getenv("MP4UPLOAD_API_KEY", "").strip()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or os.getenv("TG_BOT_TOKEN", "").strip()
@@ -219,8 +221,19 @@ def main():
 
     success_count = 0
     fail_count = 0
+    stopped_early = False
 
     for idx, task in enumerate(pending_tasks, 1):
+        elapsed_run = time.time() - script_start_time
+        if elapsed_run >= MAX_RUN_SECONDS:
+            stopped_early = True
+            print(f"\n[!] TIME-GUARD TRIGGERED: Elapsed {elapsed_run/3600:.2f}h reached safety limit ({MAX_RUN_SECONDS/3600:.2f}h)!")
+            print("[!] Gracefully stopping now so GitHub Actions can commit mapping and auto-retrigger next run.")
+            if os.getenv("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f_out:
+                    f_out.write("has_remaining=true\n")
+            break
+
         anime_key = task["anime_key"]
         anime_title = task["anime_title"]
         ep_num = task["ep_num"]
@@ -280,6 +293,11 @@ def main():
 
         # Brief pause between episodes to protect API quotas
         time.sleep(2)
+
+    if not stopped_early and (success_count + fail_count < len(pending_tasks)):
+        if os.getenv("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f_out:
+                f_out.write("has_remaining=true\n")
 
     print(f"\n==================================================================")
     print(f"[MIGRATION FINISHED] Success: {success_count} | Failed: {fail_count} | Total: {len(pending_tasks)}")

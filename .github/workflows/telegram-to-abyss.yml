@@ -7,6 +7,10 @@ concurrency:
   group: telegram-to-abyss-migrate
   cancel-in-progress: false
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   migrate:
     name: Telegram -> Abyss Migration
@@ -59,12 +63,14 @@ jobs:
           fi
 
       - name: Run Telegram to Abyss Migration
+        id: run_migration
         env:
           PYTHONUNBUFFERED: "1"
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY || secrets.MP4UPLOAD_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TG_LOCAL_API_URL: "http://127.0.0.1:8081"
+          MAX_RUN_SECONDS: "18000"
         run: |
           python telegram_to_abyss.py
 
@@ -81,3 +87,11 @@ jobs:
           git diff-index --quiet HEAD || git commit -m "Auto-Migrated Telegram videos to Abyss.to [skip ci]"
           git pull --rebase origin main || true
           git push origin main || echo "No changes or push failed"
+
+      - name: Auto-Retrigger Next Batch (Chain Continuation)
+        if: steps.run_migration.outputs.has_remaining == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "[*] Remaining episodes detected! Automatically triggering next run to continue migration seamlessly..."
+          gh workflow run "telegram-to-abyss.yml" --ref main || echo "[!] Retrigger via gh cli failed, will rely on next manual trigger"
