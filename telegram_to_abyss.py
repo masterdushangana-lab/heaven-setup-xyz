@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 from typing import Dict, Any, List, Optional
 from mapping_crypto import encrypt_mapping, decrypt_mapping
+from abyss_pool import AbyssAccountPool, get_abyss_api_keys
 
 STATE_FILE = "uploaded_episodes.json"
 MAX_RUN_SECONDS = int(os.getenv("MAX_RUN_SECONDS", "18000"))  # Default 5h (18,000s) out of 6h GitHub limit
@@ -100,80 +101,26 @@ def download_telegram_video(download_url: str, target_file: str) -> bool:
     return proc.returncode == 0 and os.path.exists(target_file) and os.path.getsize(target_file) > 100000
 
 
-def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> Optional[dict]:
-    random_base = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(25))
-    abyss_filename = f"{random_base}.mp4"
-    print(f"[*] Uploading to Abyss.to as '{abyss_filename}' (Original: {safe_name})")
-    start_time = time.time()
+def upload_to_abyss(temp_file: str, safe_name: str, pool_or_key: Any = None) -> Optional[dict]:
+    if isinstance(pool_or_key, AbyssAccountPool):
+        pool = pool_or_key
+    elif isinstance(pool_or_key, str) and pool_or_key.strip():
+        pool = AbyssAccountPool(keys=[pool_or_key.strip()])
+    else:
+        pool = AbyssAccountPool()
 
-    upload_url = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key.strip(), safe='')}"
-    max_retries = 3
-
-    for attempt in range(1, max_retries + 1):
-        if attempt > 1:
-            print(f"[*] Abyss.to retry {attempt}/{max_retries}...")
-
-        cmd_up = [
-            "curl", "-sS",
-            "-A", USER_AGENT,
-            "-H", "Expect:",
-            "--connect-timeout", "30",
-            "--max-time", "3600",
-            "--http1.1",
-            "--tcp-nodelay",
-            "-F", f"file=@{temp_file};filename={abyss_filename}",
-            upload_url
-        ]
-
-        proc = subprocess.run(cmd_up, capture_output=True, text=True)
-        if proc.returncode != 0:
-            print(f"[!] Abyss curl attempt {attempt} failed: {proc.stderr.strip()}")
-            time.sleep(4)
-            continue
-
-        resp_text = proc.stdout.strip()
-        slug = None
-
-        try:
-            data = json.loads(resp_text)
-            if isinstance(data, dict):
-                slug = data.get("slug") or data.get("id") or data.get("file_id")
-        except Exception:
-            pass
-
-        if not slug:
-            m_slug = re.search(r'["\']slug["\']\s*:\s*["\']([a-zA-Z0-9_-]{1,128})["\']', resp_text) or \
-                     re.search(r'["\']id["\']\s*:\s*["\']([a-zA-Z0-9_-]{1,128})["\']', resp_text)
-            if m_slug:
-                slug = m_slug.group(1).strip()
-
-        if not slug:
-            print(f"[!] Abyss missing slug in response: {resp_text[:200]}")
-            time.sleep(4)
-            continue
-
-        elapsed = time.time() - start_time
-        embed_url = f"https://player.abyssplayer.com/{slug}"
-        print(f"[SUCCESS] Uploaded to Abyss.to in {elapsed:.1f}s! Slug: {slug} | Embed: {embed_url}")
-
-        return {
-            "slug": slug,
-            "file_id": slug,
-            "embed_url": embed_url
-        }
-
-    return None
+    return pool.upload(temp_file, safe_name)
 
 
 def main():
     script_start_time = time.time()
     password = os.getenv("MAPPING_PASSWORD", "").strip()
-    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip() or os.getenv("MP4UPLOAD_API_KEY", "").strip()
+    abyss_pool = AbyssAccountPool()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or os.getenv("TG_BOT_TOKEN", "").strip()
     local_api_url = os.getenv("TG_LOCAL_API_URL", "").strip()
 
-    if not abyss_api_key:
-        print("[ERROR] ABYSS_API_KEY is required to upload to Abyss.to.", file=sys.stderr)
+    if abyss_pool.total_accounts == 0:
+        print("[ERROR] At least one ABYSS_API_KEY or ABYSS_API_KEYS is required to upload to Abyss.to.", file=sys.stderr)
         sys.exit(1)
 
     if not tg_bot_token:
@@ -265,9 +212,17 @@ def main():
             print(f"  [+] Downloaded from Telegram: {size_mb:.2f} MB")
 
             safe_name = f"{anime_title}_Ep_{ep_num}.mp4"
-            abyss_res = upload_to_abyss(temp_name, safe_name, abyss_api_key)
+            abyss_res = abyss_pool.upload(temp_name, safe_name)
 
             if not abyss_res:
+                if abyss_pool.all_exhausted():
+                    stopped_early = True
+                    print(f"\n[!] ALL ABYSS ACCOUNTS EXHAUSTED: Daily upload quotas reached across all {abyss_pool.total_accounts} account(s)!")
+                    print("[!] Gracefully stopping now so GitHub Actions can commit mapping and auto-retrigger next run.")
+                    if os.getenv("GITHUB_OUTPUT"):
+                        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f_out:
+                            f_out.write("has_remaining=true\n")
+                    break
                 print(f"  [!] Failed to upload to Abyss.to. Skipping.")
                 fail_count += 1
                 continue

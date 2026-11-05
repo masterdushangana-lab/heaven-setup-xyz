@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 import concurrent.futures
 from pathlib import Path
+from abyss_pool import AbyssAccountPool, parse_keys_string
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 MEGAPLAY_SIGNING_KEY = b'MpCdnT0k3n!9f2K#xQ7vL5mR8wN1pY4s'
@@ -197,82 +198,35 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
     return temp_file
 
 
-def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> dict:
+def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key_or_pool: Any = None) -> dict:
     """
-    Direct High-Speed Uploader to Abyss.to.
-    1. Uploads video via multipart POST directly to https://up.abyss.to/{key}
-    2. Retries up to 3 times if network interrupts.
-    3. Returns slug and embed_url (https://player.abyssplayer.com/{slug}).
+    Direct High-Speed Uploader to Abyss.to with Multi-Account Failover.
+    - If active account hits quota or fails, switches to the next available account.
+    - Returns slug and embed_url (https://player.abyssplayer.com/{slug}).
     """
-    random_base = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(25))
-    abyss_filename = f"{random_base}.mp4"
-    print(f"[*] Uploading to Abyss.to as '{abyss_filename}' (Original: {safe_name})")
-    start_time = time.time()
+    if isinstance(abyss_api_key_or_pool, AbyssAccountPool):
+        pool = abyss_api_key_or_pool
+    elif isinstance(abyss_api_key_or_pool, str) and abyss_api_key_or_pool.strip():
+        pool = AbyssAccountPool(keys=parse_keys_string(abyss_api_key_or_pool))
+    else:
+        pool = AbyssAccountPool()
 
-    max_retries = 3
-    last_err = None
-    upload_url = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key.strip(), safe='')}"
+    res = pool.upload(temp_file, safe_name)
+    if not res:
+        raise RuntimeError("All configured Abyss accounts failed or exhausted daily upload quota.")
 
-    for attempt in range(1, max_retries + 1):
-        if attempt > 1:
-            print(f"[*] Abyss.to upload retry {attempt}/{max_retries}...")
+    slug = res["slug"]
+    embed_url = res.get("embed_url") or f"https://player.abyssplayer.com/{slug}"
 
-        cmd_up = [
-            "curl", "-sS",
-            "-A", USER_AGENT,
-            "-H", "Expect:",
-            "--connect-timeout", "30",
-            "--max-time", "3600",
-            "--http1.1",
-            "--tcp-nodelay",
-            "-F", f"file=@{temp_file};filename={abyss_filename}",
-            upload_url
-        ]
-
-        proc = subprocess.run(cmd_up, capture_output=True, text=True)
-        if proc.returncode != 0:
-            last_err = RuntimeError(f"Abyss upload curl error: {proc.stderr.strip()}")
-            print(f"[!] Abyss upload curl attempt {attempt} failed: {proc.stderr.strip()}")
-            time.sleep(4)
-            continue
-
-        resp_text = proc.stdout.strip()
-        slug = None
-
-        try:
-            data = json.loads(resp_text)
-            if isinstance(data, dict):
-                slug = data.get("slug") or data.get("id") or data.get("file_id")
-        except Exception:
-            pass
-
-        if not slug:
-            m_slug = re.search(r'["\']slug["\']\s*:\s*["\']([a-zA-Z0-9_-]{1,128})["\']', resp_text) or \
-                     re.search(r'["\']id["\']\s*:\s*["\']([a-zA-Z0-9_-]{1,128})["\']', resp_text)
-            if m_slug:
-                slug = m_slug.group(1).strip()
-
-        if not slug:
-            last_err = RuntimeError(f"Unexpected Abyss response (missing slug): {resp_text[:300]}")
-            print(f"[!] Abyss attempt {attempt} missing slug in response: {resp_text[:200]}")
-            time.sleep(4)
-            continue
-
-        elapsed = time.time() - start_time
-        embed_url = f"https://player.abyssplayer.com/{slug}"
-        print(f"[SUCCESS] Uploaded to Abyss.to in {elapsed:.1f}s! Slug: {slug} | Embed: {embed_url}")
-
-        return {
-            "abyss": {
-                "slug": slug,
-                "file_id": slug,
-                "embed_url": embed_url
-            },
+    return {
+        "abyss": {
             "slug": slug,
+            "file_id": slug,
             "embed_url": embed_url
-        }
-
-    raise RuntimeError(f"All {max_retries} Abyss upload attempts failed. Last error: {last_err}")
+        },
+        "slug": slug,
+        "embed_url": embed_url
+    }
 
 
 def upload_to_telegram(temp_file: str, safe_name: str, bot_tokens_raw: str, chat_id: str, caption: str, local_api_url: str = "") -> dict:
@@ -406,7 +360,7 @@ def send_admin_notification(bot_tokens_raw: str, admin_chat_id: str, message: st
 
 
 def main():
-    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip() or os.getenv("MP4UPLOAD_API_KEY", "").strip()
+    abyss_pool = AbyssAccountPool()
     tg_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     tg_admin_chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip() or os.getenv("ADMIN_CHAT_ID", "").strip()
@@ -466,11 +420,11 @@ def main():
         upload_futures = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             if need_abyss:
-                if abyss_api_key:
-                    fut_abyss = executor.submit(upload_to_abyss, temp_file, safe_name, abyss_api_key)
+                if abyss_pool.total_accounts > 0:
+                    fut_abyss = executor.submit(upload_to_abyss, temp_file, safe_name, abyss_pool)
                     upload_futures[fut_abyss] = "abyss"
                 else:
-                    print("[WARN] ABYSS_API_KEY not configured. Skipping Abyss.")
+                    print("[WARN] ABYSS_API_KEY(s) not configured. Skipping Abyss.")
 
             if need_telegram:
                 if tg_bot_token and tg_chat_id:

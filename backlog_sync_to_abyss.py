@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 
 from mapping_crypto import encrypt_mapping, decrypt_mapping
+from abyss_pool import AbyssAccountPool, get_abyss_api_keys
 
 STATE_FILE = "uploaded_episodes.json"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -228,52 +229,24 @@ def download_stream(stream_url: str, output_name: str, referer: str, subtitle_ur
                 pass
 
 
-def upload_to_abyss(temp_file: str, safe_name: str, abyss_api_key: str) -> Optional[dict]:
-    random_base = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(25))
-    abyss_filename = f"{random_base}.mp4"
-    print(f"  [*] Uploading to Abyss.to as '{abyss_filename}' ({safe_name})")
-    start_time = time.time()
-    upload_url = f"https://up.abyss.to/{urllib.parse.quote(abyss_api_key.strip(), safe='')}"
+def upload_to_abyss(temp_file: str, safe_name: str, pool_or_key: Any = None) -> Optional[dict]:
+    if isinstance(pool_or_key, AbyssAccountPool):
+        pool = pool_or_key
+    elif isinstance(pool_or_key, str) and pool_or_key.strip():
+        pool = AbyssAccountPool(keys=[pool_or_key.strip()])
+    else:
+        pool = AbyssAccountPool()
 
-    cmd_up = [
-        "curl", "-sS",
-        "-A", USER_AGENT,
-        "-F", f"file=@{temp_file};filename={abyss_filename}",
-        "--connect-timeout", "30",
-        "--max-time", "1800",
-        upload_url
-    ]
-
-    try:
-        proc = subprocess.run(cmd_up, capture_output=True, text=True)
-        if proc.returncode != 0:
-            print(f"  [!] Abyss curl error: {proc.stderr[:200]}")
-            return None
-        res_data = json.loads(proc.stdout)
-        slug = res_data.get("slug") or res_data.get("file_code") or res_data.get("id")
-        if not slug and isinstance(res_data.get("result"), dict):
-            slug = res_data["result"].get("slug") or res_data["result"].get("file_code") or res_data["result"].get("id")
-
-        if not slug:
-            print(f"  [!] Abyss missing slug: {proc.stdout[:200]}")
-            return None
-
-        elapsed = time.time() - start_time
-        embed_url = f"https://player.abyssplayer.com/{slug}"
-        print(f"  [SUCCESS] Uploaded to Abyss in {elapsed:.1f}s! Slug: {slug}")
-        return {"slug": slug, "file_id": slug, "embed_url": embed_url}
-    except Exception as e:
-        print(f"  [!] Abyss upload error: {e}")
-        return None
+    return pool.upload(temp_file, safe_name)
 
 
 def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
-    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip() or os.getenv("MP4UPLOAD_API_KEY", "").strip()
+    abyss_pool = AbyssAccountPool()
     limit = int(os.getenv("MIGRATE_LIMIT", "0").strip() or "0")
 
-    if not abyss_api_key:
-        print("[ERROR] ABYSS_API_KEY is required to upload to Abyss.to.", file=sys.stderr)
+    if abyss_pool.total_accounts == 0:
+        print("[ERROR] At least one ABYSS_API_KEY or ABYSS_API_KEYS is required to upload to Abyss.to.", file=sys.stderr)
         sys.exit(1)
 
     history = load_history(password)
@@ -364,9 +337,13 @@ def main():
 
             size_mb = os.path.getsize(temp_name) / (1024 * 1024)
             safe_name = f"{anime_title}_Ep_{ep_num}.mp4"
-            abyss_res = upload_to_abyss(temp_name, safe_name, abyss_api_key)
+            abyss_res = abyss_pool.upload(temp_name, safe_name)
 
             if not abyss_res:
+                if abyss_pool.all_exhausted():
+                    print(f"\n[!] ALL ABYSS ACCOUNTS HIT DAILY QUOTA / EXHAUSTED!")
+                    print(f"[!] Stopping backlog sync cleanly to preserve quota and state.")
+                    break
                 print(f"  [!] Failed to upload to Abyss. Skipping.")
                 fail_count += 1
                 continue

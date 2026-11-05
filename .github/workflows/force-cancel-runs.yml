@@ -1,0 +1,45 @@
+name: Force Cancel and Purge All Runs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Force Cancel and Purge Runs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -c "
+          import urllib.request, json, os
+
+          repo = 'masterdushangana-lab/heaven-setup-xyz'
+          token = os.environ['GITHUB_TOKEN']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'User-Agent': 'Purge-Script'
+          }
+
+          # 1. Fetch runs
+          url = f'https://api.github.com/repos/{repo}/actions/runs?per_page=100'
+          req = urllib.request.Request(url, headers=headers)
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  data = json.loads(resp.read().decode('utf-8'))
+                  runs = data.get('workflow_runs', [])
+                  for r in runs:
+                      rid = r['id']
+                      status = r['status']
+                      if status in ['in_progress', 'queued']:
+                          print(f'Cancelling run {rid}...')
+                          cancel_url = f'https://api.github.com/repos/{repo}/actions/runs/{rid}/cancel'
+                          c_req = urllib.request.Request(cancel_url, headers=headers, method='POST')
+                          try:
+                              urllib.request.urlopen(c_req)
+                          except Exception as e:
+                              print(f'Cancel error for {rid}: {e}')
+          except Exception as e:
+              print(f'Fetch error: {e}')
+          "

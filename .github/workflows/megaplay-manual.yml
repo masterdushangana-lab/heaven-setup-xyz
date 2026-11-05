@@ -48,6 +48,7 @@ jobs:
       - name: Resolve MegaPlay Direct episodes
         id: detect_step
         env:
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
           STREAMHG_API_KEY: ${{ secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
           TARGET_MAL_ID: ${{ inputs.target_mal_id }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
@@ -109,7 +110,8 @@ jobs:
 
       - name: Download, Burn Subtitle & Upload Episode
         env:
-          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY || secrets.ABYSS_API_KEY }}
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}

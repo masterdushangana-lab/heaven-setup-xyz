@@ -13,6 +13,7 @@ import urllib.request
 import concurrent.futures
 from typing import Optional
 from mapping_crypto import encrypt_mapping, decrypt_mapping
+from abyss_pool import get_abyss_api_keys
 
 STATE_FILE = "uploaded_episodes.json"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -64,7 +65,8 @@ def ping_abyss_video(slug: str, api_key: str = "") -> dict:
 
 def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
-    abyss_api_key = os.getenv("ABYSS_API_KEY", "").strip() or os.getenv("MP4UPLOAD_API_KEY", "").strip()
+    abyss_keys = get_abyss_api_keys()
+    abyss_api_key = abyss_keys[0] if abyss_keys else ""
 
     if not password:
         print("[ERROR] MAPPING_PASSWORD not set in environment.", file=sys.stderr)

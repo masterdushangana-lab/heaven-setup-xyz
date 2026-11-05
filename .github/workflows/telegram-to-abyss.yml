@@ -67,7 +67,8 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
-          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEY || secrets.MP4UPLOAD_API_KEY }}
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.MP4UPLOAD_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.MP4UPLOAD_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TG_LOCAL_API_URL: "http://127.0.0.1:8081"
           MAX_RUN_SECONDS: "18000"
