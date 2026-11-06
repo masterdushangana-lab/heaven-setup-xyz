@@ -36,7 +36,7 @@ def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
     client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
-    limit = int(os.getenv("MAX_EPISODES", "10").strip() or "10")
+    limit = int(os.getenv("MAX_EPISODES", "25").strip() or "25")
 
     print("==================================================================")
     print("      SUBSPLEASE REALTIME 1080P INGESTION ENGINE                  ")
