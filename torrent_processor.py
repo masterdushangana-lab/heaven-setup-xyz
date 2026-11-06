@@ -252,22 +252,23 @@ def burn_subtitles_and_encode(
         except Exception:
             shutil.copy2(input_video, clean_src_path)
 
-    # 1. Primary Attempt: High-Speed Subtitle Burning (Turbo Mode)
+    # 1. Primary Attempt: Ultra Crisp Anime Quality with High-Speed Subtitle Burning
     cmd_burn = [
         "ffmpeg", "-y",
         "-threads", "4",
         "-i", clean_src_name,
         "-vf", f"subtitles={clean_src_name}",
         "-c:v", "libx264",
-        "-preset", "superfast",
-        "-tune", "fastdecode",
-        "-crf", "24",
+        "-preset", "faster",
+        "-tune", "animation",
+        "-crf", "19",
+        "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         output_mp4
     ]
 
-    print("  -> Running FFmpeg with embedded subtitle burning filter (superfast)...")
+    print("  -> Running FFmpeg: Ultra-Crisp Anime Profile (CRF 19, tune animation, preset faster)...")
     proc = subprocess.run(cmd_burn, cwd=work_dir, capture_output=True, text=True)
 
     if proc.returncode != 0 or not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
@@ -278,9 +279,10 @@ def burn_subtitles_and_encode(
             "-threads", "4",
             "-i", clean_src_name,
             "-c:v", "libx264",
-            "-preset", "superfast",
-            "-tune", "fastdecode",
-            "-crf", "24",
+            "-preset", "faster",
+            "-tune", "animation",
+            "-crf", "19",
+            "-pix_fmt", "yuv420p",
             "-c:a", "copy",
             "-movflags", "+faststart",
             output_mp4
