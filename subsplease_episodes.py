@@ -219,6 +219,7 @@ def main():
             "magnet_url": magnet_1080,
             "filename": clean_name,
             "source": "subsplease",
+            "country_of_origin": mal_info.get("country_of_origin", "JP"),
             "upload_target": upload_target
         }
 
@@ -288,6 +289,7 @@ def main():
             "magnet_url": magnet_url,
             "filename": clean_name,
             "source": "erai-raws",
+            "country_of_origin": mal_info.get("country_of_origin", "JP"),
             "upload_target": upload_target
         }
 

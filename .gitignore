@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-*$py.class
-artifacts/
-downloaded_artifacts/
-temp_*
-/tmp/
-.env
-.DS_Store

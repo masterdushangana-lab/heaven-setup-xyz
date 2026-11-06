@@ -219,10 +219,106 @@ def find_downloaded_videos(directory: str) -> List[str]:
 
 # --- Subtitle Burning & FFmpeg Encoding ---
 
+def probe_sub_and_audio_streams(video_path: str, country_code: str = "JP") -> Tuple[Optional[int], Optional[int]]:
+    """
+    Probes video streams via ffprobe to:
+    1. Always select Full English Subtitle track (skipping Signs/Songs/Forced tracks).
+    2. Always select Original Audio track based on country of origin (Japanese for JP, Chinese for CN, Korean for KR),
+       skipping external dubs like French, German, or English.
+    Returns: (subtitle_si_index, audio_relative_index)
+    """
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=index,codec_type,disposition:stream_tags=language,title",
+            "-of", "json",
+            video_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if res.returncode != 0:
+            return None, None
+
+        data = json.loads(res.stdout)
+        all_streams = data.get("streams", [])
+        sub_streams = [s for s in all_streams if s.get("codec_type") == "subtitle"]
+        audio_streams = [s for s in all_streams if s.get("codec_type") == "audio"]
+
+        # 1. Choose English Subtitle
+        best_sub_si = None
+        full_eng_found = False
+
+        for si, s in enumerate(sub_streams):
+            tags = s.get("tags", {})
+            lang = tags.get("language", "").lower()
+            title = tags.get("title", "").lower()
+            forced = s.get("disposition", {}).get("forced", 0) == 1
+
+            is_eng = lang in ("eng", "en", "english") or "english" in title or "eng" in title
+            is_signs = forced or any(k in title for k in ("sign", "song", "forced"))
+
+            if is_eng and not is_signs:
+                best_sub_si = si
+                full_eng_found = True
+                break
+            elif is_eng and not full_eng_found:
+                best_sub_si = si
+
+        # Default to first subtitle if no English tag found
+        if best_sub_si is None and sub_streams:
+            best_sub_si = 0
+
+        # 2. Choose Audio Track:
+        best_audio_idx = None
+        if len(audio_streams) == 1:
+            # Single audio track: ALWAYS use it directly without filtering!
+            best_audio_idx = 0
+        elif len(audio_streams) > 1:
+            # Multi-Audio: Smart selection matching country code, ignoring external dubs (French, German, etc.)
+            lang_map = {
+                "JP": {"jpn", "ja", "japanese"},
+                "CN": {"zho", "chi", "zh", "chinese", "mandarin"},
+                "KR": {"kor", "ko", "korean"}
+            }
+            target_langs = lang_map.get(country_code.upper(), {"jpn", "ja", "japanese"})
+
+            # Pass 1: exact target language match
+            for ai, s in enumerate(audio_streams):
+                tags = s.get("tags", {})
+                lang = tags.get("language", "").lower()
+                title = tags.get("title", "").lower()
+                if lang in target_langs or any(tl in title for tl in target_langs):
+                    best_audio_idx = ai
+                    break
+
+            # Pass 2: original flag == 1
+            if best_audio_idx is None:
+                for ai, s in enumerate(audio_streams):
+                    if s.get("disposition", {}).get("original") == 1:
+                        best_audio_idx = ai
+                        break
+
+            # Pass 3: non-dub default track
+            if best_audio_idx is None:
+                for ai, s in enumerate(audio_streams):
+                    title = s.get("tags", {}).get("title", "").lower()
+                    if "dub" not in title and s.get("disposition", {}).get("default") == 1:
+                        best_audio_idx = ai
+                        break
+
+            # Pass 4: fallback to track 0
+            if best_audio_idx is None:
+                best_audio_idx = 0
+
+        return best_sub_si, best_audio_idx
+    except Exception as e:
+        print(f"[!] ffprobe stream detection warning: {e}", file=sys.stderr)
+        return None, None
+
 def burn_subtitles_and_encode(
     input_video: str,
     output_mp4: str,
-    target_max_mb: int = 500
+    target_max_mb: int = 500,
+    country_code: str = "JP"
 ) -> bool:
     """
     Burns official embedded subtitle track directly from MKV/MP4 into video
@@ -280,12 +376,21 @@ def burn_subtitles_and_encode(
 
     print(f"[*] Bitrate Budgeting: Duration={duration_sec:.1f}s | Max Video Bitrate={max_v_rate}k | Audio={audio_kbps}k")
 
+    # Smart Track Detection: Always English Full Subs & Original Audio (matching country)
+    sub_si, audio_rel_idx = probe_sub_and_audio_streams(clean_src_path, country_code=country_code)
+    sub_filter = f"subtitles={clean_src_name}:si={sub_si}" if sub_si is not None else f"subtitles={clean_src_name}"
+    audio_map = ["-map", f"0:a:{audio_rel_idx}"] if audio_rel_idx is not None else ["-map", "0:a:0?"]
+
+    print(f"  [*] Smart Stream Selection: Subtitle Stream=si:{sub_si} (English) | Audio Stream=0:a:{audio_rel_idx} (Target: {country_code})")
+
     # Primary Attempt: Hardsub with VBV Bitrate Cap for strictly <500MB
     cmd_burn = [
         "ffmpeg", "-y",
         "-threads", "0",
         "-i", clean_src_name,
-        "-vf", f"subtitles={clean_src_name}",
+        "-map", "0:v:0",
+        *audio_map,
+        "-vf", sub_filter,
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-tune", "animation",

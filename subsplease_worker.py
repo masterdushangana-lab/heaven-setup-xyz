@@ -69,7 +69,8 @@ def main():
         print(f"[+] Downloaded Raw Video: {raw_video} ({os.path.getsize(raw_video) / (1024*1024):.1f} MB)")
 
         # Step 2: Burn Subtitles & Compress
-        burn_success = burn_subtitles_and_encode(raw_video, encoded_mp4, target_max_mb=500)
+        country_code = item_data.get("country_of_origin", "JP")
+        burn_success = burn_subtitles_and_encode(raw_video, encoded_mp4, target_max_mb=500, country_code=country_code)
         if not burn_success:
             raise RuntimeError(f"FFmpeg subtitle burning failed for {title} Ep {episode}")
 
