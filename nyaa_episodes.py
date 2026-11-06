@@ -199,8 +199,9 @@ def main():
                 print(f"[-] Ep {ep_extracted} already uploaded. Skipping.")
                 continue
 
-            clean_filename = f"{official_title}_Ep_{ep_extracted}.mp4"
-            task_key = f"{target_mal_id}_{official_title}_ep{ep_extracted}".replace(" ", "_")
+            safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
+            clean_filename = f"{safe_title}_Ep_{ep_extracted}.mp4"
+            task_key = re.sub(r"_+", "_", f"{target_mal_id}_{safe_title}_ep{ep_extracted}")
 
             item_meta = {
                 "key": task_key,
@@ -224,8 +225,9 @@ def main():
     else:
         # Single-file or raw magnet without pre-parsed files
         ep_single = episode_range if (episode_range and episode_range.isdigit()) else (extract_episode_number(torrent_title) or "1")
-        clean_filename = f"{official_title}_Ep_{ep_single}.mp4"
-        task_key = f"{target_mal_id}_{official_title}_ep{ep_single}".replace(" ", "_")
+        safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
+        clean_filename = f"{safe_title}_Ep_{ep_single}.mp4"
+        task_key = re.sub(r"_+", "_", f"{target_mal_id}_{safe_title}_ep{ep_single}")
 
         item_meta = {
             "key": task_key,

@@ -110,8 +110,9 @@ def main():
             print(f"[-] Skipping already uploaded release: {official_title} - Ep {ep_num}")
             continue
 
-        task_key = f"{mal_id or 'nomal'}_{official_title}_ep{ep_num}".replace(" ", "_")
-        clean_name = f"{official_title}_Ep_{ep_num}.mp4"
+        safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
+        task_key = re.sub(r"_+", "_", f"{mal_id or 'nomal'}_{safe_title}_ep{ep_num}")
+        clean_name = f"{safe_title}_Ep_{ep_num}.mp4"
 
         item_meta = {
             "key": task_key,
