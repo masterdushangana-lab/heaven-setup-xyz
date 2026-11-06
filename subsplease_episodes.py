@@ -66,6 +66,11 @@ def main():
         if not show_name or not ep_num:
             continue
 
+        # Ignore Batch torrents (e.g. "67-85", "01-12", "Batch")
+        if "-" in ep_num or "batch" in ep_num.lower() or "batch" in release_key.lower():
+            print(f"[-] Skipping batch release from auto-ingest: {release_key} (Ep: {ep_num})")
+            continue
+
         # Look for 1080p magnet
         downloads = release_data.get("downloads", [])
         magnet_1080 = None
