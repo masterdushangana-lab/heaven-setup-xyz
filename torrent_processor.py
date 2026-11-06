@@ -318,18 +318,21 @@ def burn_subtitles_and_encode(
     input_video: str,
     output_mp4: str,
     target_max_mb: int = 500,
-    country_code: str = "JP"
+    country_code: str = "JP",
+    is_movie: bool = False
 ) -> bool:
     """
-    Burns official embedded subtitle track directly from MKV/MP4 into video
-    and strictly enforces file size < target_max_mb (default: 500MB).
+    Burns official embedded subtitle track directly from MKV/MP4 into video.
+    Strict Size Enforcement:
+    - If is_movie is True or duration > 3600s: Strictly keeps final file < 1.5 GB (safe budget ~1400 MB).
+    - If standard TV episode: Strictly keeps final file < 500 MB (safe budget ~470 MB).
     """
     if not os.path.exists(input_video) or os.path.getsize(input_video) < 500000:
         print(f"[!] Input video not found or too small: {input_video}")
         return False
 
     orig_size_mb = os.path.getsize(input_video) / (1024 * 1024)
-    print(f"[*] Burning Subtitles & Encoding: {os.path.basename(input_video)} ({orig_size_mb:.1f} MB) -> Target < {target_max_mb} MB")
+    print(f"[*] Burning Subtitles & Encoding: {os.path.basename(input_video)} ({orig_size_mb:.1f} MB)")
     start_time = time.time()
 
     # Move/link input to a clean local name in working directory to avoid FFmpeg escaping issues
@@ -363,14 +366,25 @@ def burn_subtitles_and_encode(
     except Exception:
         pass
 
-    # Safe ceiling: 470 MB budget guarantees final size is always < 500 MB (even with container overhead)
-    safe_budget_mb = min(target_max_mb - 30, 470)
+    # Dynamic Movie Detection (< 1.5 GB Rule):
+    # If is_movie is set, target_max_mb >= 1400, or duration > 3600s (1 hour), enforce strict < 1.5 GB limit!
+    is_movie_detected = is_movie or (target_max_mb >= 1400) or (duration_sec > 3600)
+    if is_movie_detected:
+        target_max_mb = 1450
+        safe_budget_mb = 1400  # Strictly enforces < 1.5 GB (1536 MB) ceiling
+        print(f"[*] Movie detected (Duration: {duration_sec/60:.1f} mins) -> Enforcing strict < 1.5 GB target cap ({safe_budget_mb} MB budget)")
+    else:
+        target_max_mb = min(target_max_mb, 500)
+        safe_budget_mb = min(target_max_mb - 30, 470)  # Standard anime episode < 500 MB
+        print(f"[*] Standard episode (Duration: {duration_sec/60:.1f} mins) -> Enforcing strict < 500 MB target cap ({safe_budget_mb} MB budget)")
+
     audio_kbps = 128
     if duration_sec > 60:
         total_kbps = (safe_budget_mb * 8 * 1024) / duration_sec
-        max_v_rate = max(int(total_kbps - audio_kbps), 1000)
+        max_v_rate = max(int(total_kbps - audio_kbps), 800)
+        upper_cap = 2800 if is_movie_detected else 2600
+        max_v_rate = min(max_v_rate, upper_cap)
     else:
-        # Fallback to standard 24-minute anime calculation (1440s)
         max_v_rate = 2500
     buf_size = max_v_rate * 2
 

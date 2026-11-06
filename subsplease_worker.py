@@ -70,7 +70,8 @@ def main():
 
         # Step 2: Burn Subtitles & Compress
         country_code = item_data.get("country_of_origin", "JP")
-        burn_success = burn_subtitles_and_encode(raw_video, encoded_mp4, target_max_mb=500, country_code=country_code)
+        is_movie = item_data.get("is_movie", False) or (item_data.get("media_type") == "movie")
+        burn_success = burn_subtitles_and_encode(raw_video, encoded_mp4, target_max_mb=500, country_code=country_code, is_movie=is_movie)
         if not burn_success:
             raise RuntimeError(f"FFmpeg subtitle burning failed for {title} Ep {episode}")
 

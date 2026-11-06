@@ -25,10 +25,10 @@ from torrent_processor import parse_torrent_bytes, extract_episode_number, parse
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
-def fetch_nyaa_rss(query: str) -> List[Dict[str, Any]]:
+def fetch_nyaa_rss(query: str, category: str = "1_2") -> List[Dict[str, Any]]:
     """Fetches search results from Nyaa.si RSS."""
     enc_q = urllib.parse.quote(query)
-    url = f"https://nyaa.si/?page=rss&q={enc_q}&c=1_2&f=0"
+    url = f"https://nyaa.si/?page=rss&q={enc_q}&c={category}&f=0"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
     items = []
@@ -118,9 +118,44 @@ def main():
     torrent_source = None
     torrent_title = official_title
 
-    if query_or_url.startswith("magnet:?"):
+    if query_or_url.lower().startswith("magnet:?"):
         torrent_source = query_or_url
         print("[+] Direct Magnet Link provided.")
+        try:
+            parsed_m = urllib.parse.urlsplit(query_or_url)
+            params_m = urllib.parse.parse_qs(parsed_m.query)
+            info_hash = ""
+            for xt in params_m.get("xt", []):
+                if "urn:btih:" in xt.lower():
+                    info_hash = xt.split(":")[-1].strip()
+            dn = params_m.get("dn", [""])[0]
+            if dn:
+                torrent_title = dn
+
+            m_results = []
+            if info_hash:
+                print(f"[*] Querying Nyaa RSS for magnet info_hash: {info_hash}...")
+                m_results = fetch_nyaa_rss(info_hash, category="0_0")
+            if not m_results and dn:
+                print(f"[*] Querying Nyaa RSS for magnet display name: {dn}...")
+                m_results = fetch_nyaa_rss(dn, category="1_2")
+            if not m_results and dn:
+                dn_clean = re.sub(r'\[.*?\]|\(.*?\)', '', dn).strip()
+                if dn_clean:
+                    print(f"[*] Querying Nyaa RSS for cleaned title: {dn_clean}...")
+                    m_results = fetch_nyaa_rss(dn_clean, category="1_2")
+
+            if m_results:
+                chosen = m_results[0]
+                if chosen.get("torrent_url"):
+                    print(f"[+] Discovered matching .torrent on Nyaa: {chosen['title']}")
+                    print(f"    URL: {chosen['torrent_url']}")
+                    torrent_bytes = download_torrent_file(chosen["torrent_url"])
+                    if torrent_bytes:
+                        torrent_source = chosen["torrent_url"]
+                        torrent_title = chosen["title"]
+        except Exception as e:
+            print(f"[!] Warning trying to resolve .torrent from magnet: {e}")
     elif "nyaa.si/view/" in query_or_url or "nyaa.si/download/" in query_or_url:
         m_id = re.search(r'/(?:view|download)/(\d+)', query_or_url)
         if m_id:
@@ -129,6 +164,11 @@ def main():
             print(f"[*] Fetching .torrent for Nyaa ID: {tid}...")
             torrent_bytes = download_torrent_file(t_url)
             torrent_source = t_url
+    elif query_or_url.startswith("http://") or query_or_url.startswith("https://"):
+        if ".torrent" in query_or_url.lower():
+            print(f"[*] Fetching direct .torrent from URL: {query_or_url}...")
+            torrent_bytes = download_torrent_file(query_or_url)
+            torrent_source = query_or_url
     else:
         # Search on Nyaa RSS
         search_query = query_or_url

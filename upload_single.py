@@ -59,7 +59,7 @@ def get_media_duration(file_path: str) -> float:
         return 0.0
 
 
-def download_and_burn_stream(stream_url: str, output_name: str, referer: str, subtitle_url: str = None) -> str:
+def download_and_burn_stream(stream_url: str, output_name: str, referer: str, subtitle_url: str = None, is_movie: bool = False) -> str:
     safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', output_name)
     if not safe_name.endswith('.mp4'):
         safe_name += '.mp4'
@@ -100,6 +100,19 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
             # This completely avoids stream-copy cutoffs at the 12:30/13:00 anime commercial eyecatch break.
             print(f"[*] Direct Stream Decoding & Subtitle Burning ({burn_track})...")
             print(f"[*] Encoding optimized ultrafast H.264 animation profile (<500MB target, full continuity)...")
+            # Movie & Episode Bitrate Budgeting (<1.5GB for Movies, <500MB for TV)
+            stream_dur = get_media_duration(stream_url)
+            is_movie_stream = is_movie or (stream_dur > 3600) or ("movie" in output_name.lower())
+            if is_movie_stream:
+                safe_budget_mb = 1400  # Strictly < 1.5 GB
+                print(f"[*] Movie stream detected (Duration: {stream_dur/60:.1f} mins) -> Enforcing strict < 1.5 GB cap")
+                if stream_dur > 60:
+                    stream_v_rate = min(max(int((safe_budget_mb * 8 * 1024 / stream_dur) - 128), 800), 2800)
+                else:
+                    stream_v_rate = 2400
+            else:
+                stream_v_rate = 2600  # Standard TV Episode (<500MB)
+
             cmd_burn = [
                 "ffmpeg", "-y",
                 "-threads", "0",
@@ -117,8 +130,8 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                 "-preset", "ultrafast",
                 "-tune", "animation",
                 "-crf", "22",
-                "-maxrate", "2600k",
-                "-bufsize", "5200k",
+                "-maxrate", f"{stream_v_rate}k",
+                "-bufsize", f"{stream_v_rate * 2}k",
                 "-g", "48", "-keyint_min", "24", "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1:keyint=48:min-keyint=24",
                 "-c:a", "aac",
                 "-b:a", "128k",
@@ -144,8 +157,8 @@ def download_and_burn_stream(stream_url: str, output_name: str, referer: str, su
                     "-preset", "ultrafast",
                     "-tune", "animation",
                     "-crf", "22",
-                    "-maxrate", "2600k",
-                    "-bufsize", "5200k",
+                "-maxrate", f"{stream_v_rate}k",
+                "-bufsize", f"{stream_v_rate * 2}k",
                     "-g", "48", "-keyint_min", "24", "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1:keyint=48:min-keyint=24",
                     "-c:a", "aac",
                     "-b:a", "128k",
