@@ -252,27 +252,22 @@ def burn_subtitles_and_encode(
         except Exception:
             shutil.copy2(input_video, clean_src_path)
 
-    # 1. Primary Attempt: Full Subtitle Burning
+    # 1. Primary Attempt: High-Speed Subtitle Burning (Turbo Mode)
     cmd_burn = [
         "ffmpeg", "-y",
-        "-threads", "0",
+        "-threads", "4",
         "-i", clean_src_name,
         "-vf", f"subtitles={clean_src_name}",
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-tune", "animation",
-        "-crf", "22",
-        "-maxrate", "2600k",
-        "-bufsize", "5200k",
-        "-g", "48", "-keyint_min", "24",
-        "-x264-params", "cabac=1:bframes=2:ref=2:deblock=1,1:aq-mode=1:keyint=48:min-keyint=24",
-        "-c:a", "aac",
-        "-b:a", "128k",
+        "-preset", "superfast",
+        "-tune", "fastdecode",
+        "-crf", "24",
+        "-c:a", "copy",
         "-movflags", "+faststart",
         output_mp4
     ]
 
-    print("  -> Running FFmpeg with embedded subtitle burning filter...")
+    print("  -> Running FFmpeg with embedded subtitle burning filter (superfast)...")
     proc = subprocess.run(cmd_burn, cwd=work_dir, capture_output=True, text=True)
 
     if proc.returncode != 0 or not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
@@ -280,16 +275,13 @@ def burn_subtitles_and_encode(
         # Fallback: Encode video directly without subtitle filter if no subtitle streams found
         cmd_fallback = [
             "ffmpeg", "-y",
-            "-threads", "0",
+            "-threads", "4",
             "-i", clean_src_name,
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "animation",
-            "-crf", "22",
-            "-maxrate", "2600k",
-            "-bufsize", "5200k",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-preset", "superfast",
+            "-tune", "fastdecode",
+            "-crf", "24",
+            "-c:a", "copy",
             "-movflags", "+faststart",
             output_mp4
         ]
