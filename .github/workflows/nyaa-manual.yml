@@ -134,6 +134,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           TG_LOCAL_API_URL: "http://127.0.0.1:8081"
           ITEM_META_B64: ${{ matrix.item.meta_b64 }}
         run: |

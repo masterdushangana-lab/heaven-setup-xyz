@@ -19,6 +19,7 @@ from typing import Dict, Any, Optional
 from abyss_pool import AbyssAccountPool
 from torrent_processor import download_torrent, find_downloaded_videos, burn_subtitles_and_encode
 from upload_single import upload_to_telegram, send_admin_notification
+from instant_sync import record_and_push_upload
 
 
 def main():
@@ -128,6 +129,12 @@ def main():
                 f"📦 <b>Size:</b> {encoded_size_mb} MB{slug_str}{tg_str}"
             )
             send_admin_notification(tg_bot_token, tg_admin_chat_id, admin_alert)
+
+        # Instant Mapping Sync & Git Commit
+        mapping_pw = os.getenv("MAPPING_PASSWORD", "").strip() or os.getenv("STATE_ENCRYPTION_PASSWORD", "").strip()
+        if mapping_pw and (result.get("abyss") or result.get("telegram")):
+            print("[*] Executing Instant Mapping Sync & Push to GitHub...")
+            record_and_push_upload(item_data, result, mapping_pw)
 
     finally:
         # Immediate cleanup of temporary files
