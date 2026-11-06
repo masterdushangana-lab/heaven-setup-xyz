@@ -67,7 +67,7 @@ def fetch_latest_erairaws() -> List[Dict[str, Any]]:
             root = ET.fromstring(xml_data)
 
             # Regex pattern to extract show name and episode number from Erai-raws release title
-            pattern = r"^\[Erai-raws\]\s*(.*?)\s*-\s*(\d+(?:\.\d+)?(?:v\d+)?)\b"
+            pattern = r"^\[Erai-raws\]\s*(.*?)\s*-\s*(\d+(?:\.\d+)?(?:v\d+)?)\s*(?:\[|\(|\.mkv|$)"
 
             for item in root.findall("./channel/item"):
                 title_el = item.find("title")
@@ -270,7 +270,7 @@ def main():
 
         # Deduplication check against current run (e.g. SubsPlease queued it above)
         if is_queued(mal_id, ep_num):
-            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already queued via SubsPlease)")
+            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already queued in current run)")
             continue
 
         mark_queued(mal_id, ep_num)
