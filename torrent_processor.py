@@ -397,7 +397,8 @@ def burn_subtitles_and_encode(
 
     print(f"  [*] Smart Stream Selection: Subtitle Stream=si:{sub_si} (English) | Audio Stream=0:a:{audio_rel_idx} (Target: {country_code})")
 
-    # Primary Attempt: Hardsub with VBV Bitrate Cap for strictly <500MB
+    # Primary Attempt: Lightning-Fast Ultrafast Profile + In-Loop Deblock (Zero Macroblocks)
+    # Keeps ultrafast 8x-9x speed while explicitly enabling deblock, cabac, b-frames & aq-mode to eliminate 'kotu kotu'
     cmd_burn = [
         "ffmpeg", "-y",
         "-threads", "0",
@@ -408,9 +409,10 @@ def burn_subtitles_and_encode(
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-tune", "animation",
-        "-crf", "22",
+        "-crf", "21",
         "-maxrate", f"{max_v_rate}k",
         "-bufsize", f"{buf_size}k",
+        "-x264-params", "cabac=1:bframes=2:b-adapt=1:deblock=1,1:aq-mode=2:aq-strength=0.8",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", f"{audio_kbps}k",
@@ -419,7 +421,7 @@ def burn_subtitles_and_encode(
         output_mp4
     ]
 
-    print(f"  -> Running FFmpeg: Anime Hardsub Profile (CRF 22, maxrate {max_v_rate}k, preset ultrafast)...")
+    print(f"  -> Running FFmpeg: Ultrafast Speed Profile with In-Loop Deblock & CABAC (maxrate {max_v_rate}k)...")
     proc = subprocess.run(cmd_burn, cwd=work_dir)
 
     if proc.returncode != 0 or not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
@@ -431,9 +433,10 @@ def burn_subtitles_and_encode(
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-tune", "animation",
-            "-crf", "22",
+            "-crf", "21",
             "-maxrate", f"{max_v_rate}k",
             "-bufsize", f"{buf_size}k",
+            "-x264-params", "cabac=1:bframes=2:b-adapt=1:deblock=1,1:aq-mode=2:aq-strength=0.8",
             "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", f"{audio_kbps}k",

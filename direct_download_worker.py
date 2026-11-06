@@ -26,44 +26,34 @@ from instant_sync import record_and_push_upload
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 
-def download_direct_file(url: str, output_path: str, timeout_seconds: int = 2400) -> bool:
-    """Downloads direct HTTP/HTTPS video file using aria2c multi-connection."""
+def download_direct_file(url: str, output_path: str, timeout_seconds: int = 3600) -> bool:
+    """
+    Downloads direct HTTP/HTTPS video file using standard curl (single stream, robust, resume enabled).
+    Does NOT use aria2c to prevent multi-connection chunk corruption or rate limiting.
+    """
     out_dir = os.path.dirname(output_path) or "."
-    out_name = os.path.basename(output_path)
     os.makedirs(out_dir, exist_ok=True)
 
+    print(f"[*] Starting standard direct download (curl): {url[:80]}...")
     cmd = [
-        "aria2c",
-        "--max-connection-per-server=16",
-        "--split=16",
-        "--min-split-size=1M",
-        "--file-allocation=none",
-        "--summary-interval=10",
-        "--user-agent", USER_AGENT,
-        "-d", out_dir,
-        "-o", out_name,
+        "curl",
+        "-fSL",
+        "--retry", "5",
+        "--retry-delay", "3",
+        "-C", "-",
+        "-H", f"User-Agent: {USER_AGENT}",
+        "-o", output_path,
         url
     ]
 
-    print(f"[*] Starting aria2c direct download: {url[:70]}...")
     try:
         proc = subprocess.run(cmd, timeout=timeout_seconds)
         if proc.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000000:
-            print(f"[+] Download complete: {os.path.getsize(output_path) / (1024*1024):.1f} MB")
+            print(f"[+] Direct Download Complete: {os.path.getsize(output_path) / (1024*1024):.1f} MB")
             return True
-    except Exception as e:
-        print(f"[!] aria2c download error: {e}", file=sys.stderr)
-
-    # Fallback to curl
-    print("[*] Falling back to curl for direct download...")
-    try:
-        proc = subprocess.run([
-            "curl", "-sSL",
-            "-H", f"User-Agent: {USER_AGENT}",
-            "-o", output_path,
-            url
-        ], timeout=timeout_seconds)
-        return proc.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000000
+        else:
+            print(f"[!] curl finished with return code {proc.returncode}")
+            return False
     except Exception as e:
         print(f"[!] curl download error: {e}", file=sys.stderr)
         return False
