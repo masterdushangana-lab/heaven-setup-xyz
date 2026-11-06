@@ -92,6 +92,12 @@ def main():
         # Resolve MAL ID & Official Metadata
         mal_info = resolve_mal_metadata(show_name, client_id=client_id)
         mal_id = mal_info.get("mal_id")
+
+        # STRICT SAFETY: If MAL ID cannot be resolved, DO NOT QUEUE to prevent corrupting the mapping database!
+        if not mal_id:
+            print(f"[!] STRICT MAL GUARD: Skipping release '{show_name}' - Ep {ep_num} (MAL ID could not be resolved).")
+            continue
+
         official_title = mal_info.get("title_english") or mal_info.get("title") or show_name
 
         # Check blacklists

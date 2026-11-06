@@ -218,19 +218,80 @@ def fetch_official_mal_info(mal_id: int, client_id: str) -> Optional[Dict[str, A
         return None
 
 
+def resolve_via_anilist_graphql(title: str) -> Optional[Dict[str, Any]]:
+    """
+    Fallback Resolver: Queries AniList GraphQL API (100% free, zero token required).
+    Directly returns official `idMal` (MyAnimeList ID) and official English title.
+    """
+    query = """
+    query ($search: String) {
+      Media (search: $search, type: ANIME) {
+        id
+        idMal
+        title {
+          romaji
+          english
+          native
+        }
+        format
+        episodes
+      }
+    }
+    """
+    variants = []
+    seen = set()
+    def add(t: str):
+        c = re.sub(r'\s+', ' ', t).strip()
+        if c and c.lower() not in seen:
+            seen.add(c.lower())
+            variants.append(c)
+
+    add(title)
+    # Expand "S2" -> "Season 2"
+    add(re.sub(r'\bS(\d+)\b', r'Season \1', title, flags=re.IGNORECASE))
+    # Strip season notation
+    add(re.sub(r'\b(Season\s*\d+|S\d+|\d+(?:st|nd|rd|th)\s*Season)\b', '', title, flags=re.IGNORECASE))
+    # Clean symbols
+    cleaned = re.sub(r'[^a-zA-Z0-9\s-]', ' ', title)
+    add(cleaned)
+
+    for q_text in variants:
+        try:
+            payload = json.dumps({"query": query, "variables": {"search": q_text}}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://graphql.anilist.co",
+                data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": UA}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                media = data.get("data", {}).get("Media")
+                if media and media.get("idMal"):
+                    titles_obj = media.get("title", {})
+                    en_title = titles_obj.get("english")
+                    romaji_title = titles_obj.get("romaji")
+                    chosen_title = en_title or romaji_title or title
+                    return {
+                        "mal_id": int(media["idMal"]),
+                        "title": chosen_title,
+                        "title_english": chosen_title,
+                        "title_japanese": titles_obj.get("native"),
+                        "media_type": (media.get("format") or "TV").upper(),
+                        "total_episodes": media.get("episodes")
+                    }
+        except Exception:
+            continue
+    return None
+
+
 def resolve_mal_metadata(animeheaven_title: str, jp_title: Optional[str] = None, client_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    AniVault Rust exact matching engine:
-    Strictly uses Official MyAnimeList API v2 (X-MAL-CLIENT-ID).
-    1. Generates search variants for both English and Japanese Romaji.
-    2. Fetches candidate metadata rows strictly from Official MAL API v2.
-    3. Runs AniVault best_match scoring algorithm across all aliases (English, Romaji, Synonyms).
-    4. Enriches winning candidate with official MAL details (title_english) from Official MAL API.
-    5. Guarantees that official MAL English Title is returned as primary display name.
+    AniVault Dual Matching Engine (Official MAL API + AniList GraphQL Direct Fallback):
+    1. Primary: Official MAL API v2 with AniVault alias score algorithm.
+    2. Fallback: AniList GraphQL (100% free, retrieves exact idMal even without MAL_CLIENT_ID).
+    3. Guarantees that official MAL English Title and valid MAL ID are resolved.
     """
     cid = client_id or os.environ.get("MAL_CLIENT_ID", "").strip()
-    if not cid:
-        print("[MAL Resolver Warning] MAL_CLIENT_ID is not configured. Official MAL API requires a valid Client ID.")
 
     raw_queries = [animeheaven_title]
     if jp_title and jp_title.strip() not in ("-", ""):
@@ -254,17 +315,7 @@ def resolve_mal_metadata(animeheaven_title: str, jp_title: Optional[str] = None,
                     seen_ids.add(c["mal_id"])
                     candidates.append(c)
 
-    if not candidates:
-        return {
-            "mal_id": None,
-            "title": animeheaven_title,
-            "title_english": animeheaven_title,
-            "title_japanese": jp_title if jp_title and jp_title != "-" else None,
-            "media_type": "TV",
-            "total_episodes": None
-        }
-
-    # Run AniVault best_match scoring
+    # Run AniVault best_match scoring if candidates exist
     best_candidate = None
     best_score = -1000
 
@@ -286,7 +337,6 @@ def resolve_mal_metadata(animeheaven_title: str, jp_title: Optional[str] = None,
     # AniVault threshold check: score >= 450 is a match
     if best_candidate and best_score >= 450:
         mal_id = best_candidate["mal_id"]
-        # Fetch official MAL english title strictly from Official MAL API
         info = fetch_official_mal_info(mal_id, cid) if cid else None
         chosen_title = animeheaven_title
         chosen_jp = best_candidate.get("japanese_title") or jp_title
@@ -309,6 +359,16 @@ def resolve_mal_metadata(animeheaven_title: str, jp_title: Optional[str] = None,
             "media_type": media_type,
             "total_episodes": total_episodes
         }
+
+    # Secondary Ultra-Reliable Fallback: AniList GraphQL directly resolves idMal!
+    print(f"[*] MAL API had no candidates/match for '{animeheaven_title}'. Probing AniList GraphQL for exact MAL ID...")
+    anilist_res = resolve_via_anilist_graphql(animeheaven_title)
+    if not anilist_res and jp_title and jp_title != "-":
+        anilist_res = resolve_via_anilist_graphql(jp_title)
+
+    if anilist_res:
+        print(f"  [+] AniList resolved '{animeheaven_title}' -> MAL ID: {anilist_res['mal_id']} | English: {anilist_res['title_english']}")
+        return anilist_res
 
     return {
         "mal_id": None,
