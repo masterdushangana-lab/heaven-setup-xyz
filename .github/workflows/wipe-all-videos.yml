@@ -1,0 +1,46 @@
+name: Wipe All Cloud Videos & Reset Mapping
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_wipe:
+        description: 'Type "WIPE_ALL_CONFIRM" to permanently delete all Abyss & Telegram videos'
+        required: true
+        default: 'CANCEL'
+        type: string
+
+concurrency:
+  group: heaven-pipeline-wipe
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  wipe:
+    name: Wipe Abyss & Telegram Videos
+    runs-on: ubuntu-latest
+    if: inputs.confirm_wipe == 'WIPE_ALL_CONFIRM'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install cryptography requests
+
+      - name: Run Global Storage Wiper
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+        run: |
+          python wipe_all_videos.py
