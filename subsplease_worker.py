@@ -45,7 +45,7 @@ def main():
     abyss_pool = AbyssAccountPool()
 
     print("==================================================================")
-    print(f"[*] Processing SubsPlease Release: {title} - Episode {episode}")
+    print(f"[*] Processing [{item_data.get('source', 'release').upper()}] {title} - Episode {episode}")
     print(f"[*] Magnet: {magnet_url[:60]}...")
     print("==================================================================")
 

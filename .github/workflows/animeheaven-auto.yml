@@ -1,6 +1,9 @@
 name: AnimeHeaven Ingestion & Abyss (MAL Indexed + Encrypted)
 
 on:
+  schedule:
+    # Runs every 30 minutes automatically to detect and ingest fresh new releases
+    - cron: '*/30 * * * *'
   workflow_dispatch:
     inputs:
       target_anime_url:
@@ -52,7 +55,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install cryptography
+      - name: Install cryptography & requests
         run: pip install cryptography requests
 
       - name: Detect episodes
@@ -136,6 +139,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup System Tools from Media Image (FFmpeg + aria2c)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
+          echo "[*] Checking pre-built media tools image ($IMAGE)..."
+          if docker pull $IMAGE 2>/dev/null; then
+            echo "[*] Extracting tools from pre-built image..."
+            CONTAINER_ID=$(docker create $IMAGE)
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
+            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
+          else
+            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
+            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1)"
+
       - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
         env:
           TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
@@ -169,6 +189,9 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install cryptography & requests
+        run: pip install cryptography requests
+
       - name: Upload Episode
         env:
           ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
@@ -187,10 +210,17 @@ jobs:
         run: |
           docker rm -f tg-local-api 2>/dev/null || true
 
+      - name: Sanitize Artifact Key
+        id: safe_key
+        run: |
+          RAW_KEY="${{ matrix.item.key }}"
+          SAFE_KEY=$(echo "$RAW_KEY" | sed 's/[^a-zA-Z0-9_\-]/_/g')
+          echo "key=$SAFE_KEY" >> $GITHUB_OUTPUT
+
       - name: Save Result Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: result-${{ matrix.item.key }}
+          name: result-${{ steps.safe_key.outputs.key }}
           path: artifacts/
           retention-days: 1
 

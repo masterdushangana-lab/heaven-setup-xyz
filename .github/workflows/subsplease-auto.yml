@@ -2,8 +2,8 @@ name: SubsPlease Auto Ingestion & Abyss (1080p Hardsub + Encrypted)
 
 on:
   schedule:
-    # Runs every 5 minutes automatically for fresh releases
-    - cron: '*/5 * * * *'
+    # Runs every 20 minutes automatically (gives running jobs ample time to complete)
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
       max_episodes:

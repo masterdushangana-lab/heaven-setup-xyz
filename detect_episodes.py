@@ -234,7 +234,9 @@ def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[i
 
         # Match by normalized title (crucial when mal_id was saved as null)
         if not match and norm_target:
-            if normalize_title(str(entry_key)) == norm_target or                normalize_title(saved_title) == norm_target or                normalize_title(saved_eng) == norm_target:
+            if normalize_title(str(entry_key)) == norm_target or \
+               normalize_title(saved_title) == norm_target or \
+               normalize_title(saved_eng) == norm_target:
                 match = True
 
         if match:
@@ -292,7 +294,7 @@ def get_recent_releases(limit: int = 40) -> List[dict]:
 
         title = html.unescape(raw_title).strip()
         title = re.sub(r'\s+Banner$', '', title, flags=re.IGNORECASE)
-        key = f"{anime_id}_ep{ep_num}"
+        key = re.sub(r'[^a-zA-Z0-9_\-]', '_', f"{anime_id}_ep{ep_num}")
 
         if key not in seen:
             seen.add(key)
