@@ -8,6 +8,7 @@ SubsPlease Real-Time Ingestion Detector
 """
 
 import os
+import re
 import sys
 import json
 import base64
