@@ -84,9 +84,9 @@ def main():
     print(f"    Media Type: {media_type.upper()} | Country of Origin: {country_code}")
 
     # Determine Movie status
-    if is_movie_input == "yes":
+    if is_movie_input in ("yes", "true", "1"):
         is_movie = True
-    elif is_movie_input == "no":
+    elif is_movie_input in ("no", "false", "0"):
         is_movie = False
     else:
         # Auto-detect: media_type is movie or episode_num is "movie" or title has movie

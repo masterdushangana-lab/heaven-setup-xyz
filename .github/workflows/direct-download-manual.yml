@@ -20,11 +20,7 @@ on:
         description: 'Is this a Movie? (auto: detects from MAL & duration, yes: strictly <1.5GB, no: strictly <500MB)'
         required: false
         default: 'auto'
-        type: choice
-        options:
-          - auto
-          - yes
-          - no
+        type: string
       upload_target:
         description: 'Where to upload: both, abyss, or telegram'
         required: false

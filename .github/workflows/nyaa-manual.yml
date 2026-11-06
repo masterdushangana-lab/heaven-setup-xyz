@@ -21,6 +21,11 @@ on:
         required: false
         default: ''
         type: string
+      is_movie:
+        description: 'Is this a Movie? (auto: detects from MAL & duration, yes: strictly <1.5GB, no: strictly <500MB)'
+        required: false
+        default: 'auto'
+        type: string
       upload_target:
         description: 'Where to upload: both, abyss, or telegram'
         required: false
@@ -65,6 +70,7 @@ jobs:
           QUERY_OR_URL: ${{ inputs.query_or_url }}
           EPISODE_RANGE: ${{ inputs.episode_range }}
           SELECTED_FILES: ${{ inputs.selected_files }}
+          IS_MOVIE: ${{ inputs.is_movie || 'auto' }}
           UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
