@@ -73,7 +73,7 @@ def main():
 
     # 1. Initialize Abyss Pool
     abyss_pool = AbyssAccountPool()
-    all_abyss_keys = [acc.api_key for acc in abyss_pool.accounts]
+    all_abyss_keys = list(abyss_pool.keys)
     print(f"[*] Discovered {len(all_abyss_keys)} Abyss account keys in pool.")
 
     # 2. Decrypt uploaded_episodes.json
