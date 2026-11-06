@@ -74,7 +74,12 @@ jobs:
 
       - name: Setup System Tools (aria2c + FFmpeg)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg aria2
+          if ! command -v ffmpeg &> /dev/null || ! command -v aria2c &> /dev/null; then
+            echo "[*] Installing missing tools..."
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg aria2
+          else
+            echo "[*] FFmpeg and aria2c are already pre-installed. Skipping apt-get install!"
+          fi
 
       - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
         env:
