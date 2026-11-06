@@ -211,7 +211,7 @@ def download_stream(stream_url: str, output_name: str, referer: str, subtitle_ur
         ffmpeg_cmd = ["ffmpeg", "-y", "-headers", f"Referer: {referer}\r\nUser-Agent: {USER_AGENT}\r\n", "-i", stream_url]
         if temp_sub and os.path.exists(temp_sub) and os.path.getsize(temp_sub) > 50:
             ffmpeg_cmd.extend(["-vf", f"subtitles={temp_sub}"])
-            ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-c:a", "aac", "-b:a", "128k"])
+            ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "animation", "-crf", "23", "-maxrate", "2500k", "-bufsize", "5000k", "-c:a", "aac", "-b:a", "128k"])
         else:
             ffmpeg_cmd.extend(["-c", "copy"])
         ffmpeg_cmd.extend(["-movflags", "+faststart", output_name])

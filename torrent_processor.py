@@ -287,7 +287,7 @@ def burn_subtitles_and_encode(
         "-i", clean_src_name,
         "-vf", f"subtitles={clean_src_name}",
         "-c:v", "libx264",
-        "-preset", "veryfast",
+        "-preset", "ultrafast",
         "-tune", "animation",
         "-crf", "22",
         "-maxrate", f"{max_v_rate}k",
@@ -300,7 +300,7 @@ def burn_subtitles_and_encode(
         output_mp4
     ]
 
-    print(f"  -> Running FFmpeg: Anime Hardsub Profile (CRF 22, maxrate {max_v_rate}k, preset veryfast)...")
+    print(f"  -> Running FFmpeg: Anime Hardsub Profile (CRF 22, maxrate {max_v_rate}k, preset ultrafast)...")
     proc = subprocess.run(cmd_burn, cwd=work_dir)
 
     if proc.returncode != 0 or not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
@@ -310,7 +310,7 @@ def burn_subtitles_and_encode(
             "-threads", "0",
             "-i", clean_src_name,
             "-c:v", "libx264",
-            "-preset", "veryfast",
+            "-preset", "ultrafast",
             "-tune", "animation",
             "-crf", "22",
             "-maxrate", f"{max_v_rate}k",

@@ -71,9 +71,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup FFmpeg (Sub burning & <500MB Compression)
+      - name: Setup System Tools from Media Image (FFmpeg)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
+          echo "[*] Checking pre-built media tools image ($IMAGE)..."
+          if docker pull $IMAGE 2>/dev/null; then
+            echo "[*] Extracting tools from pre-built image..."
+            CONTAINER_ID=$(docker create $IMAGE)
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
+            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
+          else
+            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
+            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1)"
 
       - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
         env:
@@ -107,6 +120,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install cryptography requests
 
       - name: Download, Burn Subtitle & Upload Episode
         env:
