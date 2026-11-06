@@ -226,14 +226,14 @@ def burn_subtitles_and_encode(
 ) -> bool:
     """
     Burns official embedded subtitle track directly from MKV/MP4 into video
-    and compresses with high-speed H.264 animation profile.
+    and strictly enforces file size < target_max_mb (default: 500MB).
     """
     if not os.path.exists(input_video) or os.path.getsize(input_video) < 500000:
         print(f"[!] Input video not found or too small: {input_video}")
         return False
 
     orig_size_mb = os.path.getsize(input_video) / (1024 * 1024)
-    print(f"[*] Burning Subtitles & Encoding: {os.path.basename(input_video)} ({orig_size_mb:.1f} MB)")
+    print(f"[*] Burning Subtitles & Encoding: {os.path.basename(input_video)} ({orig_size_mb:.1f} MB) -> Target < {target_max_mb} MB")
     start_time = time.time()
 
     # Move/link input to a clean local name in working directory to avoid FFmpeg escaping issues
@@ -252,42 +252,77 @@ def burn_subtitles_and_encode(
         except Exception:
             shutil.copy2(input_video, clean_src_path)
 
-    # 1. Primary Attempt: Ultra Crisp Anime Quality with High-Speed Subtitle Burning
+    # 1. Determine media duration to calculate strict bitrate cap
+    duration_sec = 0.0
+    try:
+        p_dur = subprocess.run([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            clean_src_path
+        ], capture_output=True, text=True, timeout=15)
+        val = p_dur.stdout.strip()
+        if val:
+            duration_sec = float(val)
+    except Exception:
+        pass
+
+    # Safe ceiling: 470 MB budget guarantees final size is always < 500 MB (even with container overhead)
+    safe_budget_mb = min(target_max_mb - 30, 470)
+    audio_kbps = 128
+    if duration_sec > 60:
+        total_kbps = (safe_budget_mb * 8 * 1024) / duration_sec
+        max_v_rate = max(int(total_kbps - audio_kbps), 1000)
+    else:
+        # Fallback to standard 24-minute anime calculation (1440s)
+        max_v_rate = 2500
+    buf_size = max_v_rate * 2
+
+    print(f"[*] Bitrate Budgeting: Duration={duration_sec:.1f}s | Max Video Bitrate={max_v_rate}k | Audio={audio_kbps}k")
+
+    # Primary Attempt: Hardsub with VBV Bitrate Cap for strictly <500MB
     cmd_burn = [
         "ffmpeg", "-y",
-        "-threads", "4",
+        "-threads", "0",
         "-i", clean_src_name,
         "-vf", f"subtitles={clean_src_name}",
         "-c:v", "libx264",
-        "-preset", "faster",
+        "-preset", "veryfast",
         "-tune", "animation",
-        "-crf", "19",
+        "-crf", "22",
+        "-maxrate", f"{max_v_rate}k",
+        "-bufsize", f"{buf_size}k",
         "-pix_fmt", "yuv420p",
-        "-c:a", "copy",
+        "-c:a", "aac",
+        "-b:a", f"{audio_kbps}k",
         "-movflags", "+faststart",
+        "-stats",
         output_mp4
     ]
 
-    print("  -> Running FFmpeg: Ultra-Crisp Anime Profile (CRF 19, tune animation, preset faster)...")
-    proc = subprocess.run(cmd_burn, cwd=work_dir, capture_output=True, text=True)
+    print(f"  -> Running FFmpeg: Anime Hardsub Profile (CRF 22, maxrate {max_v_rate}k, preset veryfast)...")
+    proc = subprocess.run(cmd_burn, cwd=work_dir)
 
     if proc.returncode != 0 or not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
         print(f"  [!] Subtitle burn filter warning/fallback (Error code {proc.returncode}). Retrying standard encode...")
-        # Fallback: Encode video directly without subtitle filter if no subtitle streams found
         cmd_fallback = [
             "ffmpeg", "-y",
-            "-threads", "4",
+            "-threads", "0",
             "-i", clean_src_name,
             "-c:v", "libx264",
-            "-preset", "faster",
+            "-preset", "veryfast",
             "-tune", "animation",
-            "-crf", "19",
+            "-crf", "22",
+            "-maxrate", f"{max_v_rate}k",
+            "-bufsize", f"{buf_size}k",
             "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
+            "-c:a", "aac",
+            "-b:a", f"{audio_kbps}k",
             "-movflags", "+faststart",
+            "-stats",
             output_mp4
         ]
-        proc = subprocess.run(cmd_fallback, cwd=work_dir, capture_output=True, text=True)
+        proc = subprocess.run(cmd_fallback, cwd=work_dir)
 
     # Clean up temp symlink/copy
     if os.path.exists(clean_src_path):
@@ -296,12 +331,41 @@ def burn_subtitles_and_encode(
         except Exception:
             pass
 
-    success = proc.returncode == 0 and os.path.exists(output_mp4) and os.path.getsize(output_mp4) > 1000000
+    if not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
+        print(f"[!] Encoding failed with returncode {proc.returncode}")
+        return False
+
+    out_mb = os.path.getsize(output_mp4) / (1024 * 1024)
+
+    # Emergency recompression if file somehow exceeds target_max_mb
+    if out_mb >= target_max_mb:
+        print(f"[!] Warning: File size ({out_mb:.1f} MB) >= {target_max_mb} MB! Applying quick compression guard...")
+        temp_re = output_mp4 + ".re.mp4"
+        cmd_re = [
+            "ffmpeg", "-y",
+            "-threads", "0",
+            "-i", output_mp4,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "animation",
+            "-crf", "26",
+            "-maxrate", "2000k",
+            "-bufsize", "4000k",
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            temp_re
+        ]
+        proc_re = subprocess.run(cmd_re, cwd=work_dir)
+        if proc_re.returncode == 0 and os.path.exists(temp_re) and os.path.getsize(temp_re) > 1000000:
+            os.replace(temp_re, output_mp4)
+            out_mb = os.path.getsize(output_mp4) / (1024 * 1024)
+
+    success = out_mb < target_max_mb
     if success:
-        out_mb = os.path.getsize(output_mp4) / (1024 * 1024)
         elapsed = time.time() - start_time
-        print(f"[SUCCESS] Video encoded & hardsubbed in {elapsed:.1f}s -> {output_mp4} ({out_mb:.1f} MB)")
+        print(f"[SUCCESS] Video encoded & hardsubbed in {elapsed:.1f}s -> {output_mp4} ({out_mb:.1f} MB < {target_max_mb} MB)")
     else:
-        print(f"[!] Encoding failed. FFmpeg stderr:\n{proc.stderr[-500:]}")
+        print(f"[!] File size ({out_mb:.1f} MB) is still not lower than {target_max_mb} MB")
 
     return success
+

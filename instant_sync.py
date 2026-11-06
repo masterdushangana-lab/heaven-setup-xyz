@@ -67,6 +67,15 @@ def record_and_push_upload(
                     "title_japanese": item_meta.get("title_japanese"),
                     "episodes": {}
                 }
+            elif not history[primary_key].get("mal_id") and mal_id:
+                history[primary_key]["mal_id"] = mal_id
+
+            # Auto-migrate past title-keyed entry to this MAL ID primary_key
+            if mal_id and title in history and title != primary_key:
+                old_val = history.pop(title)
+                if isinstance(old_val, dict) and "episodes" in old_val:
+                    for o_ep, o_data in old_val["episodes"].items():
+                        history[primary_key].setdefault("episodes", {}).setdefault(o_ep, o_data)
 
             if not history[primary_key].get("title_english") and item_meta.get("title_english"):
                 history[primary_key]["title_english"] = item_meta["title_english"]

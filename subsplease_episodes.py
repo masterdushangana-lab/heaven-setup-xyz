@@ -105,11 +105,10 @@ def main():
             print(f"[-] Skipping blacklisted release: {official_title} - Ep {ep_num}")
             continue
 
-        # Deduplication check
-        if is_already_uploaded(history, "", mal_id, official_title, ep_num, upload_target=upload_target):
-            # Also check by show_name
-            if is_already_uploaded(history, "", mal_id, show_name, ep_num, upload_target=upload_target):
-                continue
+        # Deduplication check (checks both official MAL title and SubsPlease raw show_name)
+        if is_already_uploaded(history, "", mal_id, official_title, ep_num, upload_target=upload_target) or            is_already_uploaded(history, "", mal_id, show_name, ep_num, upload_target=upload_target):
+            print(f"[-] Skipping already uploaded release: {official_title} - Ep {ep_num}")
+            continue
 
         task_key = f"{mal_id or 'nomal'}_{official_title}_ep{ep_num}".replace(" ", "_")
         clean_name = f"{official_title}_Ep_{ep_num}.mp4"

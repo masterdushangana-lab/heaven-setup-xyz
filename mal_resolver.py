@@ -31,14 +31,26 @@ def normalize_title(input_str: str) -> str:
     s = s.replace('’', "").replace('\'', "").replace('`', "")
     for d in ['‐', '‑', '‒', '–', '—', '―']:
         s = s.replace(d, "-")
-    s = s.replace("1st season", "season 1")
-    s = s.replace("2nd season", "season 2")
-    s = s.replace("3rd season", "season 3")
-    s = s.replace("4th season", "season 4")
-    s = s.replace("5th season", "season 5")
+    # Standardize Season Roman Numerals
+    s = re.sub(r"\bseason\s+ii\b", "season 2", s)
+    s = re.sub(r"\bseason\s+iii\b", "season 3", s)
+    s = re.sub(r"\bseason\s+iv\b", "season 4", s)
+    s = re.sub(r"\bseason\s+v\b", "season 5", s)
+    s = re.sub(r"\bii\b", "season 2", s)
+    s = re.sub(r"\biii\b", "season 3", s)
+    s = re.sub(r"\biv\b", "season 4", s)
+    s = re.sub(r"\bv\b", "season 5", s)
+
+    # Standardize S1, S2, S3, S02, s2
+    s = re.sub(r"\bs0*(\d{1,2})\b", r"season \1", s)
+
+    # Standardize Ordinal Seasons
+    s = re.sub(r"\b(\d+)(?:st|nd|rd|th)\s*season\b", r"season \1", s)
+    s = s.replace("first season", "season 1")
     s = s.replace("second season", "season 2")
     s = s.replace("third season", "season 3")
     s = s.replace("fourth season", "season 4")
+    s = s.replace("fifth season", "season 5")
     s = s.replace("final season", "season final")
     s = s.replace("yuu gi ou", "yu-gi-oh")
     s = s.replace("yu gi oh", "yu-gi-oh")
@@ -76,10 +88,25 @@ class Signals:
 def compatible(query: str, candidate: str) -> bool:
     q = Signals(query)
     c = Signals(candidate)
+
+    # Strict Season Compatibility Guard:
     if q.season and c.season and q.season != c.season:
         return False
+    # If query requests Season >= 2, candidate cannot be Season 1 (or un-versioned season)
+    if q.season and q.season != "1" and not c.season:
+        return False
+    # If candidate is Season >= 2, query cannot be Season 1 (or un-versioned season)
+    if c.season and c.season != "1" and not q.season:
+        return False
+
+    # Part compatibility
     if q.part and c.part and q.part != c.part:
         return False
+    if q.part and q.part != "1" and not c.part:
+        return False
+    if c.part and c.part != "1" and not q.part:
+        return False
+
     if q.final_season != c.final_season:
         return False
     if q.movie != c.movie:
@@ -174,14 +201,32 @@ def search_mal_api_candidates(query: str, client_id: str) -> List[Dict[str, Any]
 
 
 def get_search_variants(title: str) -> List[str]:
-    """Generates AniVault search variants (original title + base title prefix if subtitle exists)."""
+    """Generates AniVault search variants with season expansion and Roman numerals."""
     vals = [title]
+
+    # Expand S2, S3 to Season 2, II, 2nd Season
+    m_s = re.search(r"\bS0*(\d+)\b", title, re.IGNORECASE)
+    roman_map = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI"}
+    if m_s:
+        s_num = m_s.group(1)
+        vals.append(re.sub(r"\bS0*\d+\b", f"Season {s_num}", title, flags=re.IGNORECASE))
+        ord_suffix = "st" if s_num == "1" else "nd" if s_num == "2" else "rd" if s_num == "3" else "th"
+        vals.append(re.sub(r"\bS0*\d+\b", f"{s_num}{ord_suffix} Season", title, flags=re.IGNORECASE))
+        if s_num in roman_map:
+            vals.append(re.sub(r"\bS0*\d+\b", roman_map[s_num], title, flags=re.IGNORECASE))
+
     # Check if subtitle or part separator exists
     for sep in [':', ' - ', ' – ', ' — ', '(']:
         if sep in title:
             base = title.split(sep)[0].strip()
             if len(base.split()) >= 2:
                 vals.append(base)
+                if m_s:
+                    s_num = m_s.group(1)
+                    vals.append(f"{base} Season {s_num}")
+                    if s_num in roman_map:
+                        vals.append(f"{base} {roman_map[s_num]}")
+
     # Deduplicate while preserving order
     seen = set()
     res = []
@@ -247,10 +292,15 @@ def resolve_via_anilist_graphql(title: str) -> Optional[Dict[str, Any]]:
             variants.append(c)
 
     add(title)
-    # Expand "S2" -> "Season 2"
-    add(re.sub(r'\bS(\d+)\b', r'Season \1', title, flags=re.IGNORECASE))
-    # Strip season notation
-    add(re.sub(r'\b(Season\s*\d+|S\d+|\d+(?:st|nd|rd|th)\s*Season)\b', '', title, flags=re.IGNORECASE))
+    # Expand "S2" -> "Season 2", "II", "2nd Season"
+    roman_map = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI"}
+    m_s = re.search(r"\bS0*(\d+)\b", title, re.IGNORECASE)
+    if m_s:
+        s_num = m_s.group(1)
+        add(re.sub(r"\bS0*\d+\b", f"Season {s_num}", title, flags=re.IGNORECASE))
+        add(re.sub(r"\bS0*\d+\b", f"{s_num}nd Season" if s_num == "2" else f"{s_num}rd Season" if s_num == "3" else f"{s_num}th Season", title, flags=re.IGNORECASE))
+        if s_num in roman_map:
+            add(re.sub(r"\bS0*\d+\b", roman_map[s_num], title, flags=re.IGNORECASE))
     # Clean symbols
     cleaned = re.sub(r'[^a-zA-Z0-9\s-]', ' ', title)
     add(cleaned)
@@ -270,6 +320,13 @@ def resolve_via_anilist_graphql(title: str) -> Optional[Dict[str, Any]]:
                     titles_obj = media.get("title", {})
                     en_title = titles_obj.get("english")
                     romaji_title = titles_obj.get("romaji")
+                    native_title = titles_obj.get("native")
+
+                    # Strictly validate candidate matches the requested season
+                    cand_titles = [t for t in [en_title, romaji_title, native_title] if t]
+                    if not any(compatible(title, ct) for ct in cand_titles):
+                        continue
+
                     chosen_title = en_title or romaji_title or title
                     return {
                         "mal_id": int(media["idMal"]),

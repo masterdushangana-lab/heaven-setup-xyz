@@ -35,7 +35,7 @@ def load_history(password: str) -> dict:
 
 def auto_heal_history(history: dict, client_id: str) -> Tuple[dict, int]:
     """Scans and automatically resolves missing MAL IDs for existing entries in history."""
-    if not isinstance(history, dict) or not client_id:
+    if not isinstance(history, dict):
         return history, 0
 
     healed = {}
@@ -129,9 +129,15 @@ def main():
                                 continue
 
                             title = data.get("title", "Unknown Anime")
-                            ep_num = str(data.get("episode", 1))
+                            ep_num = str(data.get("episode", 1)).strip()
                             mal_info = data.get("mal_info") or {}
-                            mal_id = mal_info.get("mal_id")
+                            raw_mal = data.get("mal_id") or mal_info.get("mal_id")
+                            mal_id = None
+                            if raw_mal is not None:
+                                try:
+                                    mal_id = int(raw_mal)
+                                except Exception:
+                                    pass
 
                             primary_key = str(mal_id) if mal_id else title
 
@@ -139,15 +145,22 @@ def main():
                                 history[primary_key] = {
                                     "mal_id": mal_id,
                                     "title": title,
-                                    "title_english": mal_info.get("title_english") or title,
-                                    "title_japanese": mal_info.get("title_japanese"),
-                                    "media_type": mal_info.get("media_type", "TV"),
+                                    "title_english": data.get("title_english") or mal_info.get("title_english") or title,
+                                    "title_japanese": data.get("title_japanese") or mal_info.get("title_japanese"),
+                                    "media_type": data.get("media_type") or mal_info.get("media_type", "TV"),
                                     "animeheaven_id": data.get("anime_id"),
                                     "animeheaven_url": data.get("anime_url"),
                                     "episodes": {}
                                 }
                             elif not history[primary_key].get("mal_id") and mal_id:
                                 history[primary_key]["mal_id"] = mal_id
+
+                            # Auto-migrate past title-keyed entry to this MAL ID primary_key
+                            if mal_id and title in history and title != primary_key:
+                                old_entry = history.pop(title)
+                                if isinstance(old_entry, dict) and "episodes" in old_entry:
+                                    for o_ep, o_val in old_entry["episodes"].items():
+                                        history[primary_key].setdefault("episodes", {}).setdefault(o_ep, o_val)
 
                             history[primary_key].setdefault("episodes", {})
 

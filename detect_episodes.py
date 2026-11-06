@@ -18,7 +18,7 @@ import base64
 import urllib.request
 from typing import Dict, List, Optional, Set
 
-from mal_resolver import resolve_mal_metadata, fetch_official_mal_info
+from mal_resolver import resolve_mal_metadata, fetch_official_mal_info, normalize_title
 from mapping_crypto import decrypt_mapping
 
 ANIMEHEAVEN_BASE = "https://animeheaven.me"
@@ -184,35 +184,63 @@ def is_episode_blacklisted(deleted_records: dict, anime_id: str, mal_id: Optiona
 
 
 def get_existing_episode_record(history: dict, anime_id: str, mal_id: Optional[int], anime_title: str, episode_num) -> Optional[dict]:
-    """Finds the existing episode record in history if available."""
+    """Finds the existing episode record in history with multi-format episode matching & deep title search."""
     ep_str = str(episode_num).strip()
+    variants = [ep_str]
+    if ep_str.isdigit():
+        n = int(ep_str)
+        variants.extend([str(n), f"{n:02d}"])
+    variants = list(dict.fromkeys(variants))
+
+    def find_in_eps(eps_dict: dict) -> Optional[dict]:
+        if not isinstance(eps_dict, dict):
+            return None
+        for var in variants:
+            if var in eps_dict:
+                return eps_dict[var]
+        return None
 
     # 1. By MAL ID
     if mal_id and str(mal_id) in history:
-        eps = history[str(mal_id)].get("episodes", {})
-        if ep_str in eps:
-            return eps[ep_str]
+        rec = find_in_eps(history[str(mal_id)].get("episodes", {}))
+        if rec:
+            return rec
 
     # 2. By Title
-    if anime_title in history:
-        eps = history[anime_title].get("episodes", {})
-        if ep_str in eps:
-            return eps[ep_str]
+    if anime_title and anime_title in history:
+        rec = find_in_eps(history[anime_title].get("episodes", {}))
+        if rec:
+            return rec
 
-    # 3. Deep search
+    # 3. Deep search (MAL ID, Title, English Title, normalized match)
+    norm_target = normalize_title(anime_title) if anime_title else ""
     for entry_key, entry_val in history.items():
+        if not isinstance(entry_val, dict):
+            continue
         saved_aid = entry_val.get("animeheaven_id")
         saved_mal = entry_val.get("mal_id")
+        saved_title = entry_val.get("title", "")
+        saved_eng = entry_val.get("title_english", "")
+
         match = False
-        if saved_aid and saved_aid == anime_id:
+        if anime_id and saved_aid and saved_aid == anime_id:
             match = True
-        elif mal_id and saved_mal and int(saved_mal) == int(mal_id):
-            match = True
+        elif mal_id and saved_mal:
+            try:
+                if int(saved_mal) == int(mal_id):
+                    match = True
+            except Exception:
+                pass
+
+        # Match by normalized title (crucial when mal_id was saved as null)
+        if not match and norm_target:
+            if normalize_title(str(entry_key)) == norm_target or                normalize_title(saved_title) == norm_target or                normalize_title(saved_eng) == norm_target:
+                match = True
 
         if match:
-            eps = entry_val.get("episodes", {})
-            if ep_str in eps:
-                return eps[ep_str]
+            rec = find_in_eps(entry_val.get("episodes", {}))
+            if rec:
+                return rec
 
     return None
 
