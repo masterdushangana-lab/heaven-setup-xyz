@@ -168,10 +168,26 @@ def main():
         if not result:
             raise RuntimeError("Both Abyss and Telegram uploads failed.")
 
-        # Step 4: Record & Push to History
-        print("[*] Encrypting and recording upload to repository mapping...")
-        record_and_push_upload(item_data, result)
-        print("[SUCCESS] Direct video pipeline completed successfully!")
+        # Step 4: Admin Alert & Instant Mapping Sync
+        if tg_bot_token and tg_admin_chat_id:
+            slug = result.get("slug", "")
+            tg_info = result.get("telegram")
+            tg_post = tg_info.get("post_url") if isinstance(tg_info, dict) else ""
+            slug_str = f" | ⚡ Abyss: <code>{slug}</code>" if slug else ""
+            tg_str = f" | ✈️ <a href='{tg_post}'>Telegram Post</a>" if tg_post else ""
+
+            admin_alert = (
+                f"✅ <b>Direct Ingest Complete:</b> {title} - {'Movie' if is_movie else 'Episode ' + episode}\n"
+                f"📦 <b>Size:</b> {encoded_size_mb} MB{slug_str}{tg_str}"
+            )
+            send_admin_notification(tg_bot_token, tg_admin_chat_id, admin_alert)
+
+        # Sync to Git Mapping
+        mapping_pw = os.getenv("MAPPING_PASSWORD", "").strip() or os.getenv("STATE_ENCRYPTION_PASSWORD", "").strip()
+        if mapping_pw and (result.get("abyss") or result.get("telegram")):
+            print("[*] Encrypting and recording upload to repository mapping...")
+            record_and_push_upload(item_data, result, mapping_pw)
+            print("[SUCCESS] Direct video pipeline completed successfully!")
 
     finally:
         # Cleanup
