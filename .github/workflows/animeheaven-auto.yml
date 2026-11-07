@@ -1,0 +1,310 @@
+name: AnimeHeaven Ingestion & Abyss (MAL Indexed + Encrypted)
+
+on:
+  schedule:
+    # Runs every 30 minutes automatically to detect and ingest fresh new releases
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      target_anime_url:
+        description: 'Anime URL (e.g. https://animeheaven.me/anime.php?5u8d5). Leave blank for fresh auto releases.'
+        required: false
+        default: ''
+        type: string
+      target_mal_id:
+        description: 'Mandatory MAL ID when launching manual backlog upload.'
+        required: false
+        default: ''
+        type: string
+      episode_range:
+        description: 'Episode Range filter (e.g. 1-12, 13-24, 5, or 1-5,10-15). Leave blank or "all" to upload all available.'
+        required: false
+        default: 'all'
+        type: string
+      upload_target:
+        description: 'Where to upload: both, abyss, or telegram'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - abyss
+          - telegram
+
+concurrency:
+  group: shared-media-auto-ingestion-pipeline
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  detect:
+    name: Detect Episodes & MAL Lookup
+    runs-on: ubuntu-latest
+    outputs:
+      has_items: ${{ steps.detect_step.outputs.has_items }}
+      matrix: ${{ steps.detect_step.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync latest mapping from main
+        run: |
+          git fetch origin main
+          git checkout origin/main -- uploaded_episodes.json || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography & requests
+        run: pip install cryptography requests
+
+      - name: Detect episodes
+        id: detect_step
+        env:
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          TARGET_ANIME_URL: ${{ inputs.target_anime_url }}
+          TARGET_MAL_ID: ${{ inputs.target_mal_id }}
+          EPISODE_RANGE: ${{ inputs.episode_range }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+        run: |
+          python detect_episodes.py
+
+      - name: Silent purge empty runs from Actions history
+        if: steps.detect_step.outputs.has_items != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_DELETE_PAT || secrets.SYNC_PAT || github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error
+          token = os.environ.get('GH_TOKEN', '')
+          current_run_id = str(os.environ.get('RUN_ID', ''))
+          repo = os.environ.get('REPO', '')
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28"
+          }
+
+          print("[i] Fetching past completed workflow runs to purge...", flush=True)
+          try:
+              list_url = f"https://api.github.com/repos/{repo}/actions/runs?per_page=100&status=completed"
+              req = urllib.request.Request(list_url, headers=headers)
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  data = json.loads(resp.read().decode('utf-8'))
+                  runs = data.get('workflow_runs', [])
+                  deleted_count = 0
+                  for r in runs:
+                      rid = r.get('id')
+                      if str(rid) == current_run_id:
+                          continue
+                      del_url = f"https://api.github.com/repos/{repo}/actions/runs/{rid}"
+                      del_req = urllib.request.Request(del_url, headers=headers, method="DELETE")
+                      try:
+                          with urllib.request.urlopen(del_req, timeout=10) as d_resp:
+                              if d_resp.status in (204, 200):
+                                  deleted_count += 1
+                      except Exception:
+                          pass
+                  print(f"[SUCCESS] Purged {deleted_count} past completed workflow runs from history.", flush=True)
+          except Exception as e:
+              print(f"[!] Purge check error: {e}", flush=True)
+
+          # Also attempt deleting current run
+          try:
+              curr_del_req = urllib.request.Request(f"https://api.github.com/repos/{repo}/actions/runs/{current_run_id}", headers=headers, method="DELETE")
+              with urllib.request.urlopen(curr_del_req, timeout=10) as d_resp:
+                  if d_resp.status in (204, 200):
+                      print(f"[SUCCESS] Current run #{current_run_id} purged.", flush=True)
+          except Exception:
+              pass
+          PY
+
+
+  upload:
+    name: Upload EP
+    needs: detect
+    if: needs.detect.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        item: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup System Tools from Media Image (FFmpeg + aria2c)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
+          echo "[*] Checking pre-built media tools image ($IMAGE)..."
+          if docker pull $IMAGE 2>/dev/null; then
+            echo "[*] Extracting tools from pre-built image..."
+            CONTAINER_ID=$(docker create $IMAGE)
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
+            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
+          else
+            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
+            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1)"
+
+      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
+        run: |
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            echo "[*] Launching Local Telegram Bot API server container..."
+            mkdir -p /tmp/tg-bot-api-data
+            docker run -d \
+              --name tg-local-api \
+              -p 8081:8081 \
+              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
+              -e TELEGRAM_API_ID="${TG_API_ID}" \
+              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
+              aiogram/telegram-bot-api:latest \
+              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
+            
+            for i in {1..30}; do
+              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
+                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
+                break
+              fi
+              sleep 1
+            done
+          else
+            echo "[WARN] TELEGRAM_API_ID or TELEGRAM_API_HASH not found in Secrets. Local bot API skipped."
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography & requests
+        run: pip install cryptography requests
+
+      - name: Upload Episode
+        env:
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
+          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+          ITEM_META_B64: ${{ matrix.item.meta_b64 }}
+        run: |
+          python upload_single.py
+
+      - name: Stop Local Telegram Bot API Server
+        if: always()
+        run: |
+          docker rm -f tg-local-api 2>/dev/null || true
+
+      - name: Sanitize Artifact Key
+        id: safe_key
+        run: |
+          RAW_KEY="${{ matrix.item.key }}"
+          SAFE_KEY=$(echo "$RAW_KEY" | sed 's/[^a-zA-Z0-9_\-]/_/g')
+          echo "key=$SAFE_KEY" >> $GITHUB_OUTPUT
+
+      - name: Save Result Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ steps.safe_key.outputs.key }}
+          path: artifacts/
+          retention-days: 1
+
+  sync:
+    name: Sync MAL Tree & Encrypt History
+    needs: upload
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+        continue-on-error: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography
+        run: pip install cryptography requests
+
+      - name: Sync history & Commit
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAX_RETRIES=5
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "[*] Syncing history and pushing to main (Attempt $i/$MAX_RETRIES)..."
+            
+            # Fetch latest remote changes and reset tracking cleanly
+            git fetch origin main
+            git reset --hard origin/main
+
+            # Run sync script to merge downloaded artifacts into the latest history
+            python sync_history.py downloaded_artifacts
+
+            # Stage changes
+            git add uploaded_episodes.json
+
+            # Check if there are any changes to commit
+            if git diff --staged --quiet; then
+              echo "[i] No history changes to commit."
+              SUCCESS=true
+              break
+            fi
+
+            # Commit changes
+            git commit -m "Auto: Synced & Encrypted uploaded episodes history"
+
+            # Attempt push
+            if git push origin main; then
+              echo "[SUCCESS] Pushed updated history to origin/main successfully!"
+              SUCCESS=true
+              break
+            fi
+
+            echo "[WARN] Push rejected due to concurrent remote changes. Retrying in 3s..."
+            sleep 3
+          done
+
+          if [ "$SUCCESS" = false ]; then
+            echo "[ERROR] Failed to push history to GitHub after $MAX_RETRIES attempts."
+            exit 1
+          fi

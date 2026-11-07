@@ -1,0 +1,235 @@
+name: Direct Video URL Manual Ingestion & Abyss (1080p Hardsub + Encrypted)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_mal_id:
+        description: 'Mandatory MAL ID (e.g. 21 for One Piece, 58567 for Solo Leveling S2)'
+        required: true
+        type: string
+      direct_url:
+        description: 'Direct HTTP/HTTPS Video Download URL (MP4, MKV, etc.)'
+        required: true
+        type: string
+      episode_number:
+        description: 'Episode Number (e.g. 1, 200, or Movie)'
+        required: false
+        default: '1'
+        type: string
+      is_movie:
+        description: 'Is this a Movie? (auto: detects from MAL & duration, yes: strictly <1.5GB, no: strictly <500MB)'
+        required: false
+        default: 'auto'
+        type: string
+      upload_target:
+        description: 'Where to upload: both, abyss, or telegram'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - abyss
+          - telegram
+
+concurrency:
+  group: direct-download-pipeline
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  detect:
+    name: Resolve Direct Video URL & Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      has_items: ${{ steps.detect_step.outputs.has_items }}
+      matrix: ${{ steps.detect_step.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install cryptography requests
+
+      - name: Resolve Direct Video Metadata
+        id: detect_step
+        env:
+          TARGET_MAL_ID: ${{ inputs.target_mal_id }}
+          DIRECT_URL: ${{ inputs.direct_url }}
+          EPISODE_NUMBER: ${{ inputs.episode_number }}
+          IS_MOVIE: ${{ inputs.is_movie }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          python direct_download_episodes.py
+
+  upload:
+    name: Download, Hardsub & Ingest
+    needs: detect
+    if: needs.detect.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        item: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup System Tools from Media Image (FFmpeg + aria2c)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
+          echo "[*] Checking pre-built media tools image ($IMAGE)..."
+          if docker pull $IMAGE 2>/dev/null; then
+            echo "[*] Extracting tools from pre-built image..."
+            CONTAINER_ID=$(docker create $IMAGE)
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
+            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
+          else
+            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
+            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1), aria2c=$(aria2c -v | head -n1)"
+
+      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
+        run: |
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            echo "[*] Launching Local Telegram Bot API server container..."
+            mkdir -p /tmp/tg-bot-api-data
+            docker run -d \
+              --name tg-local-api \
+              -p 8081:8081 \
+              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
+              -e TELEGRAM_API_ID="${TG_API_ID}" \
+              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
+              aiogram/telegram-bot-api:latest \
+              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
+            
+            for i in {1..30}; do
+              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
+                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
+                break
+              fi
+              sleep 1
+            done
+          else
+            echo "[WARN] TELEGRAM_API_ID or TELEGRAM_API_HASH not found in Secrets. Local bot API skipped."
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install cryptography requests
+
+      - name: Process, Burn Subtitles & Upload
+        env:
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
+          ITEM_META_B64: ${{ matrix.item.meta_b64 }}
+        run: |
+          python direct_download_worker.py
+
+      - name: Stop Local Telegram Bot API Server
+        if: always()
+        run: |
+          docker rm -f tg-local-api 2>/dev/null || true
+
+      - name: Save Result Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.item.key }}
+          path: artifacts/
+          retention-days: 1
+
+  sync:
+    name: Sync MAL Tree & Encrypt History
+    needs: upload
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded_artifacts
+        continue-on-error: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install cryptography
+        run: pip install cryptography requests
+
+      - name: Sync history & Commit
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          MAX_RETRIES=5
+          SUCCESS=false
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            echo "[*] Syncing history and pushing to main (Attempt $i/$MAX_RETRIES)..."
+            
+            git fetch origin main
+            git reset --hard origin/main
+
+            python sync_history.py downloaded_artifacts
+
+            if git diff --quiet uploaded_episodes.json; then
+              echo "[*] No mapping changes to commit."
+              SUCCESS=true
+              break
+            fi
+
+            git add uploaded_episodes.json
+            git commit -m "Auto: Synced & Encrypted Direct Video release to history [skip ci]"
+
+            if git push origin main; then
+              echo "[SUCCESS] Successfully pushed updated encrypted history!"
+              SUCCESS=true
+              break
+            else
+              echo "[!] Push rejected (concurrent commit detected). Retrying in 3 seconds..."
+              sleep 3
+            fi
+          done
+
+          if [ "$SUCCESS" != "true" ]; then
+            echo "[ERROR] Failed to push updated history after $MAX_RETRIES attempts."
+            exit 1
+          fi
