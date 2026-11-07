@@ -17,7 +17,7 @@ import base64
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set, Tuple
 
 from mapping_crypto import decrypt_mapping
 from mal_resolver import resolve_mal_metadata
