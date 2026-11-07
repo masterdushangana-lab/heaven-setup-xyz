@@ -114,7 +114,7 @@ jobs:
           TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
           TG_LOCAL_API_URL: "http://127.0.0.1:8081"
           POLL_INTERVAL: ${{ inputs.poll_interval || '10' }}
-          MAX_RUNTIME_SECONDS: ${{ (inputs.max_runtime_hours || 5) * 3600 }}
+          MAX_RUNTIME_HOURS: ${{ inputs.max_runtime_hours || '5' }}
           UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
         run: |
           python erai_daemon.py

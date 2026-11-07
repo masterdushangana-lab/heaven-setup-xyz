@@ -445,5 +445,6 @@ def run_daemon(poll_interval: int = 10, max_runtime_seconds: int = 19800):
 
 if __name__ == "__main__":
     interval = int(os.getenv("POLL_INTERVAL", "10").strip() or "10")
-    max_run = int(os.getenv("MAX_RUNTIME_SECONDS", "19800").strip() or "19800")
+    hours = float(os.getenv("MAX_RUNTIME_HOURS", "5").strip() or "5")
+    max_run = int(os.getenv("MAX_RUNTIME_SECONDS", str(int(hours * 3600))).strip() or 18000)
     run_daemon(poll_interval=interval, max_runtime_seconds=max_run)
