@@ -19,7 +19,7 @@ on:
 
 concurrency:
   group: purge-old-runs-pipeline
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   actions: write
