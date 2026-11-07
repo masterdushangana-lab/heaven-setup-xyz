@@ -316,8 +316,9 @@ def probe_sub_and_audio_streams(video_path: str, country_code: str = "JP") -> Tu
 
 def sanitize_ass_file(ass_path: str):
     """Sanitizes .ass subtitle file to prevent libass infinite loops and deadlocks.
-    Strips corrupt vector drawings (\p1...\p0) and recursive clipping masks (\clip/\iclip)
-    that cause FFmpeg to freeze at specific timestamps (e.g. 86.95s/frame 2068).
+    1. Normalizes Fontname to 'DejaVu Sans' so fontconfig never locks up traversing system disk fonts.
+    2. Strips corrupt vector drawings (\p1...\p0) and recursive clipping masks (\clip/\iclip)
+       that cause FFmpeg to freeze at specific timestamps (e.g. 86.95s/frame 2068).
     All normal dialogue, subtitles, colors, and positioning remain completely intact.
     """
     try:
@@ -325,17 +326,25 @@ def sanitize_ass_file(ass_path: str):
             lines = f.readlines()
         new_lines = []
         for line in lines:
-            if line.startswith("Dialogue:"):
+            if line.startswith("Style:"):
+                # Force style font to standard pre-cached font to avoid fontconfig disk lookup hang
+                parts = line.split(",")
+                if len(parts) > 1:
+                    parts[1] = "DejaVu Sans"
+                    line = ",".join(parts)
+            elif line.startswith("Dialogue:"):
                 # 1. Remove dangerous vector clipping masks
                 line = re.sub(r'\\[i]?clip\([^)]*\)', '', line)
                 # 2. Remove complex vector drawing paths ({\p1}m 0 0...{\p0})
                 line = re.sub(r'\{[^}]*\\[pP][1-9][^}]*\}[^{]*(\{[^}]*\\[pP]0[^}]*\})?', '', line)
                 # 3. Strip any residual drawing tags
                 line = re.sub(r'\\[pP][0-9]+', '', line)
+                # 4. Standardize inline font overrides to prevent fontconfig locks
+                line = re.sub(r'\\fn[^\\}]+', r'\\fnDejaVu Sans', line)
             new_lines.append(line)
         with open(ass_path, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
-        print("  [+] Subtitle sanitized: stripped dangerous vector drawings and clipping deadlocks")
+        print("  [+] Subtitle sanitized: normalized fonts to DejaVu Sans & stripped vector locks")
     except Exception as e:
         print(f"  [!] Notice during ASS sanitization: {e}")
 
@@ -429,7 +438,7 @@ def burn_subtitles_and_encode(
     try:
         # Extract all embedded fonts in 0.2s so libass never scans the system
         subprocess.run(
-            ["ffmpeg", "-y", "-dump_attachment:t", "", "-i", clean_src_name],
+            ["ffmpeg", "-y", "-dump_attachment:t", "", "-i", clean_src_path],
             cwd=fonts_dir, capture_output=True, text=True, timeout=15
         )
     except Exception:
