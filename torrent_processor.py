@@ -314,6 +314,32 @@ def probe_sub_and_audio_streams(video_path: str, country_code: str = "JP") -> Tu
         print(f"[!] ffprobe stream detection warning: {e}", file=sys.stderr)
         return None, None
 
+def sanitize_ass_file(ass_path: str):
+    """Sanitizes .ass subtitle file to prevent libass infinite loops and deadlocks.
+    Strips corrupt vector drawings (\p1...\p0) and recursive clipping masks (\clip/\iclip)
+    that cause FFmpeg to freeze at specific timestamps (e.g. 86.95s/frame 2068).
+    All normal dialogue, subtitles, colors, and positioning remain completely intact.
+    """
+    try:
+        with open(ass_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+        new_lines = []
+        for line in lines:
+            if line.startswith("Dialogue:"):
+                # 1. Remove dangerous vector clipping masks
+                line = re.sub(r'\\[i]?clip\([^)]*\)', '', line)
+                # 2. Remove complex vector drawing paths ({\p1}m 0 0...{\p0})
+                line = re.sub(r'\{[^}]*\\[pP][1-9][^}]*\}[^{]*(\{[^}]*\\[pP]0[^}]*\})?', '', line)
+                # 3. Strip any residual drawing tags
+                line = re.sub(r'\\[pP][0-9]+', '', line)
+            new_lines.append(line)
+        with open(ass_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        print("  [+] Subtitle sanitized: stripped dangerous vector drawings and clipping deadlocks")
+    except Exception as e:
+        print(f"  [!] Notice during ASS sanitization: {e}")
+
+
 def burn_subtitles_and_encode(
     input_video: str,
     output_mp4: str,
@@ -422,10 +448,11 @@ def burn_subtitles_and_encode(
             if res_ext.returncode == 0 and os.path.exists(extracted_ass) and os.path.getsize(extracted_ass) > 100:
                 has_sub = True
                 print(f"  [+] Clean Subtitle extracted to '{os.path.basename(extracted_ass)}' ({os.path.getsize(extracted_ass)/1024:.1f} KB)")
+                sanitize_ass_file(extracted_ass)
         except Exception as e_ext:
             print(f"  [!] Subtitle extraction notice: {e_ext}")
 
-    fonts_opt = f":fontsdir={fonts_dir}" if os.path.exists(fonts_dir) and os.listdir(fonts_dir) else ""
+    fonts_opt = ":fontsdir=fonts_temp" if os.path.exists(fonts_dir) and os.listdir(fonts_dir) else ""
     if has_sub:
         sub_filter = f"subtitles=extracted_subs.ass{fonts_opt}"
     elif sub_si is not None:
