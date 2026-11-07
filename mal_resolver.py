@@ -336,6 +336,17 @@ def resolve_via_anilist_graphql(title: str) -> Optional[Dict[str, Any]]:
     cleaned = re.sub(r'[^a-zA-Z0-9\s-]', ' ', title)
     add(cleaned)
 
+    # Sub-segments from compound/colon/hyphen titles (e.g. Donghua Japanese/Chinese transliterations)
+    segments = [s.strip() for s in re.split(r'[:–—\-\(\)]', title) if s.strip()]
+    for seg in segments:
+        add(seg)
+        words = seg.split()
+        if len(words) > 1:
+            if len(words[0]) >= 4:
+                add(words[0])
+            if len(words[-1]) >= 4:
+                add(words[-1])
+
     for q_text in variants:
         try:
             payload = json.dumps({"query": query, "variables": {"search": q_text}}).encode("utf-8")
