@@ -32,7 +32,7 @@ on:
           - telegram
 
 concurrency:
-  group: animeheaven-pipeline
+  group: shared-media-auto-ingestion-pipeline
   cancel-in-progress: false
 
 permissions:
@@ -49,6 +49,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync latest mapping from main
+        run: |
+          git fetch origin main
+          git checkout origin/main -- uploaded_episodes.json || true
 
       - name: Setup Python
         uses: actions/setup-python@v5

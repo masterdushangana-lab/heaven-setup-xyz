@@ -270,7 +270,8 @@ def is_already_uploaded(history: dict, anime_id: str, mal_id: Optional[int], ani
     elif upload_target == "telegram":
         return has_telegram
     elif upload_target == "both":
-        return has_abyss and has_telegram
+        # Stop duplicate re-uploads: If already uploaded to Abyss OR Telegram, do not re-upload!
+        return has_abyss or has_telegram
 
     return True
 

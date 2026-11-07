@@ -25,6 +25,94 @@ from detect_episodes import is_already_uploaded, is_episode_blacklisted, load_hi
 
 SUBSPLEASE_LATEST_API = "https://subsplease.org/api/?f=latest&tz=UTC"
 ERAI_NYAA_RSS_URL = "https://nyaa.si/?page=rss&u=Erai-raws&q=1080p"
+def resolve_season_and_episode_offset(initial_mal_id: int, raw_ep_str: str) -> Tuple[int, str, str]:
+    """
+    Iteratively traverses the SEQUEL chain across seasons (Season 1 -> Season 2 -> Season 3 ...)
+    until the continuous episode number is accurately mapped to the exact season's MAL ID
+    and relative episode number.
+    Returns: (final_mal_id, final_official_title, final_ep_str)
+    """
+    try:
+        current_ep = int(raw_ep_str)
+    except Exception:
+        return initial_mal_id, "", raw_ep_str
+
+    current_mal_id = initial_mal_id
+    current_title = ""
+
+    query = """
+    query ($idMal: Int) {
+      Media (idMal: $idMal, type: ANIME) {
+        idMal
+        episodes
+        title {
+          english
+          romaji
+        }
+        relations {
+          edges {
+            relationType
+            node {
+              idMal
+              format
+              episodes
+              title {
+                english
+                romaji
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    for step in range(10):  # Maximum 10 seasons traversal
+        try:
+            req_data = json.dumps({"query": query, "variables": {"idMal": current_mal_id}}).encode("utf-8")
+            req = urllib.request.Request(
+                "https://graphql.anilist.co",
+                data=req_data,
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                media = data.get("data", {}).get("Media")
+                if not media:
+                    break
+
+                total_eps = media.get("episodes")
+                title_obj = media.get("title", {})
+                current_title = title_obj.get("english") or title_obj.get("romaji") or current_title
+
+                # If this season is ongoing, unknown total, or current_ep fits inside this season:
+                if not total_eps or current_ep <= int(total_eps):
+                    return current_mal_id, current_title, str(current_ep)
+
+                # Episode exceeds this season's count! Look for SEQUEL
+                sequel_node = None
+                edges = media.get("relations", {}).get("edges", [])
+                for edge in edges:
+                    if edge.get("relationType") == "SEQUEL":
+                        node = edge.get("node")
+                        if node and node.get("idMal") and node.get("format") in ("TV", "TV_SHORT", "ONA"):
+                            sequel_node = node
+                            break
+
+                if sequel_node:
+                    current_ep -= int(total_eps)
+                    current_mal_id = int(sequel_node["idMal"])
+                    seq_title = sequel_node.get("title", {}).get("english") or sequel_node.get("title", {}).get("romaji")
+                    print(f"[*] Multi-Season Traversal: Exceeded {current_title} ({total_eps} eps) -> Advancing to {seq_title} (Remaining Ep: {current_ep})")
+                    current_title = seq_title or current_title
+                else:
+                    return current_mal_id, current_title, str(current_ep)
+        except Exception as e:
+            print(f"[!] Warning during season traversal for MAL ID {current_mal_id}: {e}", file=sys.stderr)
+            break
+
+    return current_mal_id, current_title, str(current_ep)
+
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 TRACKERS = (
@@ -130,19 +218,110 @@ def main():
 
     pending_tasks = []
     # Set of (mal_id, normalized_ep) already queued in this current run
-    queued_keys: Set[Tuple[int, str]] = set()
+    queued_keys = set()
 
-    def is_queued(mal_id: int, ep: str) -> bool:
-        norm = normalize_episode(ep)
-        return (mal_id, norm) in queued_keys or (mal_id, str(ep).strip()) in queued_keys
+    def is_queued(mal_id: Optional[int], title: str, ep: str) -> bool:
+        norm_ep = normalize_episode(ep)
+        ep_raw = str(ep).strip()
+        if mal_id:
+            if (mal_id, norm_ep) in queued_keys or (mal_id, ep_raw) in queued_keys:
+                return True
+        norm_t = normalize_title(title)
+        if (norm_t, norm_ep) in queued_keys or (norm_t, ep_raw) in queued_keys:
+            return True
+        return False
 
-    def mark_queued(mal_id: int, ep: str):
-        norm = normalize_episode(ep)
-        queued_keys.add((mal_id, norm))
-        queued_keys.add((mal_id, str(ep).strip()))
+    def mark_queued(mal_id: Optional[int], title: str, ep: str):
+        norm_ep = normalize_episode(ep)
+        ep_raw = str(ep).strip()
+        if mal_id:
+            queued_keys.add((mal_id, norm_ep))
+            queued_keys.add((mal_id, ep_raw))
+        norm_t = normalize_title(title)
+        queued_keys.add((norm_t, norm_ep))
+        queued_keys.add((norm_t, ep_raw))
 
     # -------------------------------------------------------------
-    # 1. Fetch & Process SubsPlease Releases
+    # 1. Fetch & Process Erai-raws Releases (Accurate Part & Cour Structure First)
+    # -------------------------------------------------------------
+    erai_items = fetch_latest_erairaws()
+    print(f"[*] Retrieved {len(erai_items)} recent releases from Erai-raws.")
+
+    for item in erai_items:
+        if len(pending_tasks) >= limit:
+            break
+
+        show_name = item["show"]
+        ep_num = str(item["episode"]).strip()
+        magnet_url = item["magnet"]
+
+        if not show_name or not ep_num or not magnet_url:
+            continue
+
+        # Resolve MAL ID & Official Metadata
+        mal_info = resolve_mal_metadata(show_name, client_id=client_id)
+        mal_id = mal_info.get("mal_id")
+
+        if not mal_id:
+            print(f"[!] STRICT MAL GUARD: Skipping Erai-raws '{show_name}' - Ep {ep_num} (MAL ID could not be resolved).")
+            continue
+
+        official_title = mal_info.get("title_english") or mal_info.get("title") or show_name
+
+        # Smart Multi-Season & Multi-Part Traversal Guard for SubsPlease Continuous Numbering
+        total_eps = mal_info.get("total_episodes")
+        if total_eps and ep_num.isdigit() and int(ep_num) > int(total_eps):
+            print(f"[*] Detected continuous numbering for '{show_name}': Ep {ep_num} > Total {total_eps}. Resolving target season...")
+            new_mal_id, new_title, new_ep = resolve_season_and_episode_offset(mal_id, ep_num)
+            if new_mal_id and new_mal_id != mal_id:
+                print(f"[+] Re-mapped continuous release across seasons: {new_title} - Episode {new_ep} (MAL ID: {new_mal_id})")
+                mal_id = new_mal_id
+                official_title = new_title or official_title
+                ep_num = new_ep
+
+        # Check blacklists
+        if is_episode_blacklisted(deleted_records, "", mal_id, official_title, ep_num):
+            print(f"[-] Skipping blacklisted release: {official_title} - Ep {ep_num}")
+            continue
+
+        # Deduplication check against history (e.g. SubsPlease uploaded it yesterday/earlier)
+        if is_already_uploaded(history, "", mal_id, official_title, ep_num, upload_target=upload_target) or \
+           is_already_uploaded(history, "", mal_id, show_name, ep_num, upload_target=upload_target):
+            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already uploaded in library)")
+            continue
+
+        # Deduplication check against current run (e.g. SubsPlease queued it above)
+        if is_queued(mal_id, official_title, ep_num) or is_queued(mal_id, show_name, ep_num):
+            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already queued in current run)")
+            continue
+
+        mark_queued(mal_id, official_title, ep_num); mark_queued(mal_id, show_name, ep_num)
+
+        safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
+        task_key = re.sub(r"_+", "_", f"{mal_id}_{safe_title}_ep{ep_num}")
+        clean_name = f"{safe_title}_Ep_{ep_num}.mp4"
+
+        item_meta = {
+            "key": task_key,
+            "title": official_title,
+            "show_original": show_name,
+            "episode": ep_num,
+            "mal_id": mal_id,
+            "magnet_url": magnet_url,
+            "filename": clean_name,
+            "source": "erai-raws",
+            "country_of_origin": mal_info.get("country_of_origin", "JP"),
+            "upload_target": upload_target
+        }
+
+        meta_b64 = base64.b64encode(json.dumps(item_meta).encode("utf-8")).decode("utf-8")
+        pending_tasks.append({
+            "key": task_key,
+            "meta_b64": meta_b64,
+            "display": f"[Erai-raws] {official_title} - Ep {ep_num}"
+        })
+        print(f"[+] Queued Erai-raws Release: {official_title} - Episode {ep_num} (MAL ID: {mal_id})")
+# 2. Fetch & Process SubsPlease Releases (Complementary Zero-Duplicate Catch)
     # -------------------------------------------------------------
     sp_items = fetch_latest_subsplease()
     print(f"[*] Retrieved {len(sp_items)} recent releases from SubsPlease.")
@@ -189,6 +368,17 @@ def main():
 
         official_title = mal_info.get("title_english") or mal_info.get("title") or show_name
 
+        # Smart Multi-Season & Multi-Part Traversal Guard for SubsPlease Continuous Numbering
+        total_eps = mal_info.get("total_episodes")
+        if total_eps and ep_num.isdigit() and int(ep_num) > int(total_eps):
+            print(f"[*] Detected continuous numbering for '{show_name}': Ep {ep_num} > Total {total_eps}. Resolving target season...")
+            new_mal_id, new_title, new_ep = resolve_season_and_episode_offset(mal_id, ep_num)
+            if new_mal_id and new_mal_id != mal_id:
+                print(f"[+] Re-mapped continuous release across seasons: {new_title} - Episode {new_ep} (MAL ID: {new_mal_id})")
+                mal_id = new_mal_id
+                official_title = new_title or official_title
+                ep_num = new_ep
+
         # Check blacklists
         if is_episode_blacklisted(deleted_records, "", mal_id, official_title, ep_num):
             print(f"[-] Skipping blacklisted release: {official_title} - Ep {ep_num}")
@@ -201,10 +391,10 @@ def main():
             continue
 
         # In-run queue deduplication check
-        if is_queued(mal_id, ep_num):
+        if is_queued(mal_id, official_title, ep_num) or is_queued(mal_id, show_name, ep_num):
             continue
 
-        mark_queued(mal_id, ep_num)
+        mark_queued(mal_id, official_title, ep_num); mark_queued(mal_id, show_name, ep_num)
 
         safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
         task_key = re.sub(r"_+", "_", f"{mal_id}_{safe_title}_ep{ep_num}")
@@ -232,75 +422,7 @@ def main():
         print(f"[+] Queued SubsPlease Release: {official_title} - Episode {ep_num} (MAL ID: {mal_id})")
 
     # -------------------------------------------------------------
-    # 2. Fetch & Process Erai-raws Releases (Zero Duplicates!)
-    # -------------------------------------------------------------
-    erai_items = fetch_latest_erairaws()
-    print(f"[*] Retrieved {len(erai_items)} recent releases from Erai-raws.")
-
-    for item in erai_items:
-        if len(pending_tasks) >= limit:
-            break
-
-        show_name = item["show"]
-        ep_num = str(item["episode"]).strip()
-        magnet_url = item["magnet"]
-
-        if not show_name or not ep_num or not magnet_url:
-            continue
-
-        # Resolve MAL ID & Official Metadata
-        mal_info = resolve_mal_metadata(show_name, client_id=client_id)
-        mal_id = mal_info.get("mal_id")
-
-        if not mal_id:
-            print(f"[!] STRICT MAL GUARD: Skipping Erai-raws '{show_name}' - Ep {ep_num} (MAL ID could not be resolved).")
-            continue
-
-        official_title = mal_info.get("title_english") or mal_info.get("title") or show_name
-
-        # Check blacklists
-        if is_episode_blacklisted(deleted_records, "", mal_id, official_title, ep_num):
-            print(f"[-] Skipping blacklisted release: {official_title} - Ep {ep_num}")
-            continue
-
-        # Deduplication check against history (e.g. SubsPlease uploaded it yesterday/earlier)
-        if is_already_uploaded(history, "", mal_id, official_title, ep_num, upload_target=upload_target) or \
-           is_already_uploaded(history, "", mal_id, show_name, ep_num, upload_target=upload_target):
-            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already uploaded in library)")
-            continue
-
-        # Deduplication check against current run (e.g. SubsPlease queued it above)
-        if is_queued(mal_id, ep_num):
-            print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already queued in current run)")
-            continue
-
-        mark_queued(mal_id, ep_num)
-
-        safe_title = re.sub(r"[^a-zA-Z0-9_\-]", "_", official_title)
-        task_key = re.sub(r"_+", "_", f"{mal_id}_{safe_title}_ep{ep_num}")
-        clean_name = f"{safe_title}_Ep_{ep_num}.mp4"
-
-        item_meta = {
-            "key": task_key,
-            "title": official_title,
-            "show_original": show_name,
-            "episode": ep_num,
-            "mal_id": mal_id,
-            "magnet_url": magnet_url,
-            "filename": clean_name,
-            "source": "erai-raws",
-            "country_of_origin": mal_info.get("country_of_origin", "JP"),
-            "upload_target": upload_target
-        }
-
-        meta_b64 = base64.b64encode(json.dumps(item_meta).encode("utf-8")).decode("utf-8")
-        pending_tasks.append({
-            "key": task_key,
-            "meta_b64": meta_b64,
-            "display": f"[Erai-raws] {official_title} - Ep {ep_num}"
-        })
-        print(f"[+] Queued Erai-raws Release: {official_title} - Episode {ep_num} (MAL ID: {mal_id})")
-
+    
     print(f"\n==================================================================")
     print(f"[*] Total New Unique Episodes Queued: {len(pending_tasks)}")
     print("==================================================================")
