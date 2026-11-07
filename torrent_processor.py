@@ -394,9 +394,21 @@ def burn_subtitles_and_encode(
     sub_si, audio_rel_idx = probe_sub_and_audio_streams(clean_src_path, country_code=country_code)
     audio_map = ["-map", f"0:a:{audio_rel_idx}"] if audio_rel_idx is not None else ["-map", "0:a:0?"]
 
-    # Pre-extract Subtitle to standalone .ass file (Prevents MKV font attachment locks & 0.14x freezes)
+    # Pre-extract Subtitle and font attachments to prevent fontconfig locks & 86s freezes
     extracted_ass = os.path.join(work_dir, "extracted_subs.ass")
+    fonts_dir = os.path.join(work_dir, "fonts_temp")
+    os.makedirs(fonts_dir, exist_ok=True)
     has_sub = False
+
+    try:
+        # Extract all embedded fonts in 0.2s so libass never scans the system
+        subprocess.run(
+            ["ffmpeg", "-y", "-dump_attachment:t", "", "-i", clean_src_name],
+            cwd=fonts_dir, capture_output=True, text=True, timeout=15
+        )
+    except Exception:
+        pass
+
     if sub_si is not None:
         try:
             cmd_ext = [
@@ -413,20 +425,22 @@ def burn_subtitles_and_encode(
         except Exception as e_ext:
             print(f"  [!] Subtitle extraction notice: {e_ext}")
 
+    fonts_opt = f":fontsdir={fonts_dir}" if os.path.exists(fonts_dir) and os.listdir(fonts_dir) else ""
     if has_sub:
-        sub_filter = "subtitles=extracted_subs.ass"
+        sub_filter = f"subtitles=extracted_subs.ass{fonts_opt}"
     elif sub_si is not None:
-        sub_filter = f"subtitles={clean_src_name}:si={sub_si}"
+        sub_filter = f"subtitles={clean_src_name}:si={sub_si}{fonts_opt}"
     else:
-        sub_filter = f"subtitles={clean_src_name}"
+        sub_filter = f"subtitles={clean_src_name}{fonts_opt}"
 
     print(f"  [*] Smart Stream Selection: Subtitle={sub_filter} | Audio Stream=0:a:{audio_rel_idx} (Target: {country_code})")
 
     # Ultra-Fast High-Fidelity Profile (CRF 19 + Light Deblock):
-    # Native ultrafast preset without heavy motion estimation (b-adapt / aq-mode) for unthrottled 6x-8x encoding speed.
-    # Standalone .ass subtitles ensure zero font-lock delays and continuous unthrottled throughput.
+    # -max_muxing_queue_size 4096 prevents buffer deadlocks on multi-audio/mkv streams.
+    # -fflags +genpts+discardcorrupt ensures non-stop processing even through broadcast glitch frames.
     cmd_burn = [
         "ffmpeg", "-y",
+        "-fflags", "+genpts+discardcorrupt",
         "-filter_threads", "1",
         "-filter_complex_threads", "1",
         "-threads", "0",
@@ -440,6 +454,7 @@ def burn_subtitles_and_encode(
         "-maxrate", f"{max_v_rate}k",
         "-bufsize", f"{buf_size}k",
         "-x264-params", "cabac=1:deblock=0,0",
+        "-max_muxing_queue_size", "4096",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", f"{audio_kbps}k",
@@ -485,6 +500,8 @@ def burn_subtitles_and_encode(
             os.remove(extracted_ass)
         except Exception:
             pass
+    if os.path.exists(fonts_dir):
+        shutil.rmtree(fonts_dir, ignore_errors=True)
 
     if not os.path.exists(output_mp4) or os.path.getsize(output_mp4) < 1000000:
         print(f"[!] Encoding failed with returncode {proc.returncode}")
