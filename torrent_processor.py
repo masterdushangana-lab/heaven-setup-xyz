@@ -392,14 +392,39 @@ def burn_subtitles_and_encode(
 
     # Smart Track Detection: Always English Full Subs & Original Audio (matching country)
     sub_si, audio_rel_idx = probe_sub_and_audio_streams(clean_src_path, country_code=country_code)
-    sub_filter = f"subtitles={clean_src_name}:si={sub_si}" if sub_si is not None else f"subtitles={clean_src_name}"
     audio_map = ["-map", f"0:a:{audio_rel_idx}"] if audio_rel_idx is not None else ["-map", "0:a:0?"]
 
-    print(f"  [*] Smart Stream Selection: Subtitle Stream=si:{sub_si} (English) | Audio Stream=0:a:{audio_rel_idx} (Target: {country_code})")
+    # Pre-extract Subtitle to standalone .ass file (Prevents MKV font attachment locks & 0.14x freezes)
+    extracted_ass = os.path.join(work_dir, "extracted_subs.ass")
+    has_sub = False
+    if sub_si is not None:
+        try:
+            cmd_ext = [
+                "ffmpeg", "-y",
+                "-i", clean_src_name,
+                "-map", f"0:s:{sub_si}",
+                "-c:s", "copy",
+                extracted_ass
+            ]
+            res_ext = subprocess.run(cmd_ext, cwd=work_dir, capture_output=True, text=True, timeout=30)
+            if res_ext.returncode == 0 and os.path.exists(extracted_ass) and os.path.getsize(extracted_ass) > 100:
+                has_sub = True
+                print(f"  [+] Clean Subtitle extracted to '{os.path.basename(extracted_ass)}' ({os.path.getsize(extracted_ass)/1024:.1f} KB)")
+        except Exception as e_ext:
+            print(f"  [!] Subtitle extraction notice: {e_ext}")
+
+    if has_sub:
+        sub_filter = "subtitles=extracted_subs.ass"
+    elif sub_si is not None:
+        sub_filter = f"subtitles={clean_src_name}:si={sub_si}"
+    else:
+        sub_filter = f"subtitles={clean_src_name}"
+
+    print(f"  [*] Smart Stream Selection: Subtitle={sub_filter} | Audio Stream=0:a:{audio_rel_idx} (Target: {country_code})")
 
     # Ultra-Fast High-Fidelity Profile (CRF 19 + Light Deblock):
     # Native ultrafast preset without heavy motion estimation (b-adapt / aq-mode) for unthrottled 6x-8x encoding speed.
-    # CABAC & light deblocking ensures crisp 1080p anime lines with zero macroblocks.
+    # Standalone .ass subtitles ensure zero font-lock delays and continuous unthrottled throughput.
     cmd_burn = [
         "ffmpeg", "-y",
         "-threads", "0",
@@ -445,10 +470,15 @@ def burn_subtitles_and_encode(
         ]
         proc = subprocess.run(cmd_fallback, cwd=work_dir)
 
-    # Clean up temp symlink/copy
+    # Clean up temp files
     if os.path.exists(clean_src_path):
         try:
             os.remove(clean_src_path)
+        except Exception:
+            pass
+    if os.path.exists(extracted_ass):
+        try:
+            os.remove(extracted_ass)
         except Exception:
             pass
 
