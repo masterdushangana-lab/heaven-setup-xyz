@@ -1,8 +1,8 @@
-name: Erai-raws Real-Time Autonomous Daemon
+name: Erai-raws Real-Time Autonomous Sentinel (10s Live Trigger)
 
 on:
   schedule:
-    # Auto-renews every 5 hours (runner stays alive for up to 5 hours, ensuring 24/7 continuous coverage)
+    # Auto-renews every 5 hours (runs continuously 24/7)
     - cron: '0 */5 * * *'
   workflow_dispatch:
     inputs:
@@ -16,18 +16,9 @@ on:
         required: false
         default: '5'
         type: string
-      upload_target:
-        description: 'Upload target: both, abyss, or telegram'
-        required: false
-        default: 'both'
-        type: choice
-        options:
-          - both
-          - abyss
-          - telegram
 
 concurrency:
-  group: erai-realtime-autonomous-daemon
+  group: erai-realtime-autonomous-sentinel
   cancel-in-progress: true
 
 permissions:
@@ -35,8 +26,8 @@ permissions:
   contents: write
 
 jobs:
-  daemon:
-    name: Erai-raws Real-Time Continuous Ingest
+  sentinel:
+    name: Erai-raws 24/7 Real-Time Sentinel
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -44,82 +35,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup System Tools from Media Image (FFmpeg + aria2c)
-        run: |
-          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
-          echo "[*] Checking pre-built media tools image ($IMAGE)..."
-          if docker pull $IMAGE 2>/dev/null; then
-            echo "[*] Extracting tools from pre-built image..."
-            CONTAINER_ID=$(docker create $IMAGE)
-            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
-            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
-            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
-          else
-            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
-            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
-            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
-          fi
-          if ! command -v aria2c >/dev/null; then
-            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2
-          fi
-          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1), aria2c=$(aria2c -v | head -n1)"
-
-      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
-        env:
-          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
-        run: |
-          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
-            echo "[*] Launching Local Telegram Bot API server container..."
-            mkdir -p /tmp/tg-bot-api-data
-            docker run -d \
-              --name tg-local-api \
-              -p 8081:8081 \
-              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
-              -e TELEGRAM_API_ID="${TG_API_ID}" \
-              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
-              aiogram/telegram-bot-api:latest \
-              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
-            
-            for i in {1..30}; do
-              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
-                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
-                break
-              fi
-              sleep 1
-            done
-          fi
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: pip install cryptography requests
 
-      - name: Configure Git for Instant Mapping Sync
-        run: |
-          git config --global user.name "Erai Daemon"
-          git config --global user.email "daemon@clixarena.internal"
-
-      - name: Run Erai-raws Real-Time Autonomous Daemon
+      - name: Run Sentinel Watch Loop
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
-          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
-          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
-          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
-          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
           POLL_INTERVAL: ${{ inputs.poll_interval || '10' }}
           MAX_RUNTIME_HOURS: ${{ inputs.max_runtime_hours || '5' }}
-          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
         run: |
           python erai_daemon.py
-
-      - name: Stop Local Telegram Bot API Server
-        if: always()
-        run: |
-          docker rm -f tg-local-api 2>/dev/null || true
