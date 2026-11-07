@@ -168,6 +168,19 @@ def fetch_latest_erairaws() -> List[Dict[str, Any]]:
                     "magnet": magnet_url,
                     "raw_title": raw_title
                 })
+
+        # Deduplicate HEVC vs AVC: Erai-raws uploads both HEVC & AVC for the exact same episode.
+        # Prefer HEVC for superior compression and smaller file size, fallback to AVC.
+        unique_releases = {}
+        for it in items:
+            k = (it["show"].lower(), it["episode"])
+            is_hevc = "HEVC" in it["raw_title"]
+            if k not in unique_releases:
+                unique_releases[k] = it
+            elif not ("HEVC" in unique_releases[k]["raw_title"]) and is_hevc:
+                unique_releases[k] = it
+
+        items = list(unique_releases.values())
     except Exception as e:
         print(f"[!] Warning: Error fetching Erai-raws Nyaa RSS: {e}", file=sys.stderr)
 
@@ -178,7 +191,7 @@ def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
     client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
-    limit = int(os.getenv("MAX_EPISODES", "75").strip() or "75")
+    limit = int(os.getenv("MAX_EPISODES", "20").strip() or "20")
 
     print("==================================================================")
     print("      ERAI-RAWS MATRIX DETECTOR: 1080P SIMULCAST INGESTION        ")

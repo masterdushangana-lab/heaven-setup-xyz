@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       max_episodes:
-        description: 'Maximum new episodes to queue per run (default: 75)'
+        description: 'Maximum new episodes to queue per run (default: 20)'
         required: false
-        default: '75'
+        default: '20'
         type: string
       upload_target:
         description: 'Where to upload: both, abyss, or telegram'
@@ -60,7 +60,7 @@ jobs:
         env:
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
-          MAX_EPISODES: ${{ inputs.max_episodes || '75' }}
+          MAX_EPISODES: ${{ inputs.max_episodes || '20' }}
           UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
         run: |
           python erai_episodes.py
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 4
       matrix:
         item: ${{ fromJson(needs.detect.outputs.matrix) }}
     steps:

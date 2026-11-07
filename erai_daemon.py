@@ -65,6 +65,14 @@ def fetch_latest_erairaws() -> List[Dict[str, Any]]:
                     "episode": m.group(2).strip(),
                     "raw_title": raw_title
                 })
+
+        # Deduplicate HEVC & AVC versions in feed
+        unique_releases = {}
+        for it in items:
+            k = (it["show"].lower(), it["episode"])
+            if k not in unique_releases or ("HEVC" in it["raw_title"]):
+                unique_releases[k] = it
+        items = list(unique_releases.values())
     except Exception as e:
         print(f"[!] Erai RSS poll error: {e}", file=sys.stderr)
 
@@ -77,7 +85,7 @@ def trigger_matrix_pipeline(repo: str, token: str, count: int) -> bool:
     payload = json.dumps({
         "ref": "main",
         "inputs": {
-            "max_episodes": str(max(25, count)),
+            "max_episodes": str(min(20, max(1, count))),
             "upload_target": "both"
         }
     }).encode("utf-8")

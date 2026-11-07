@@ -401,7 +401,7 @@ def burn_subtitles_and_encode(
     # Keeps ultrafast 8x-9x speed while explicitly enabling deblock, cabac, b-frames & aq-mode to eliminate 'kotu kotu'
     cmd_burn = [
         "ffmpeg", "-y",
-        "-threads", "0",
+        "-threads", "2",
         "-i", clean_src_name,
         "-map", "0:v:0",
         *audio_map,
@@ -428,7 +428,7 @@ def burn_subtitles_and_encode(
         print(f"  [!] Subtitle burn filter warning/fallback (Error code {proc.returncode}). Retrying standard encode...")
         cmd_fallback = [
             "ffmpeg", "-y",
-            "-threads", "0",
+            "-threads", "2",
             "-i", clean_src_name,
             "-c:v", "libx264",
             "-preset", "ultrafast",
@@ -465,7 +465,7 @@ def burn_subtitles_and_encode(
         temp_re = output_mp4 + ".re.mp4"
         cmd_re = [
             "ffmpeg", "-y",
-            "-threads", "0",
+            "-threads", "2",
             "-i", output_mp4,
             "-c:v", "libx264",
             "-preset", "ultrafast",
