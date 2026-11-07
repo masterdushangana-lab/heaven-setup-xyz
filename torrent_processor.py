@@ -427,6 +427,8 @@ def burn_subtitles_and_encode(
     # Standalone .ass subtitles ensure zero font-lock delays and continuous unthrottled throughput.
     cmd_burn = [
         "ffmpeg", "-y",
+        "-filter_threads", "1",
+        "-filter_complex_threads", "1",
         "-threads", "0",
         "-i", clean_src_name,
         "-map", "0:v:0",
@@ -453,6 +455,8 @@ def burn_subtitles_and_encode(
         print(f"  [!] Subtitle burn filter warning/fallback (Error code {proc.returncode}). Retrying standard encode...")
         cmd_fallback = [
             "ffmpeg", "-y",
+            "-filter_threads", "1",
+            "-filter_complex_threads", "1",
             "-threads", "0",
             "-i", clean_src_name,
             "-c:v", "libx264",
