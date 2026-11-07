@@ -66,11 +66,14 @@ def fetch_latest_erairaws() -> List[Dict[str, Any]]:
                     "raw_title": raw_title
                 })
 
-        # Deduplicate HEVC & AVC versions in feed
+        # Deduplicate AVC & HEVC versions in feed: Prefer AVC (H.264)
         unique_releases = {}
         for it in items:
             k = (it["show"].lower(), it["episode"])
-            if k not in unique_releases or ("HEVC" in it["raw_title"]):
+            is_avc = "AVC" in it["raw_title"]
+            if k not in unique_releases:
+                unique_releases[k] = it
+            elif not ("AVC" in unique_releases[k]["raw_title"]) and is_avc:
                 unique_releases[k] = it
         items = list(unique_releases.values())
     except Exception as e:
