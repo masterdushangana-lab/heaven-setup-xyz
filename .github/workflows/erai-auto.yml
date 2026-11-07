@@ -1,0 +1,194 @@
+name: Erai-raws Auto Ingestion & Abyss (1080p Hardsub Matrix Parallel)
+
+on:
+  schedule:
+    # Runs every 15 minutes automatically
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      max_episodes:
+        description: 'Maximum new episodes to queue per run (default: 25)'
+        required: false
+        default: '25'
+        type: string
+      upload_target:
+        description: 'Where to upload: both, abyss, or telegram'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - abyss
+          - telegram
+
+concurrency:
+  group: erai-matrix-auto-ingestion-pipeline
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  detect:
+    name: Detect New Erai-raws Releases
+    runs-on: ubuntu-latest
+    outputs:
+      has_items: ${{ steps.detect_step.outputs.has_items }}
+      matrix: ${{ steps.detect_step.outputs.matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync latest mapping from main
+        run: |
+          git fetch origin main
+          git checkout origin/main -- uploaded_episodes.json || true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install cryptography requests
+
+      - name: Detect New Erai-raws Releases
+        id: detect_step
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
+          MAX_EPISODES: ${{ inputs.max_episodes || '25' }}
+          UPLOAD_TARGET: ${{ inputs.upload_target || 'both' }}
+        run: |
+          python erai_episodes.py
+
+  upload:
+    name: Parallel Ingest
+    needs: detect
+    if: needs.detect.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        item: ${{ fromJson(needs.detect.outputs.matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup System Tools from Media Image (FFmpeg + aria2c)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}/media-tools:latest"
+          echo "[*] Checking pre-built media tools image ($IMAGE)..."
+          if docker pull $IMAGE 2>/dev/null; then
+            echo "[*] Extracting tools from pre-built image..."
+            CONTAINER_ID=$(docker create $IMAGE)
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo docker cp $CONTAINER_ID:/usr/local/bin/ffprobe /usr/local/bin/ffprobe
+            docker rm -f $CONTAINER_ID >/dev/null 2>&1 || true
+          else
+            echo "[*] Image not on GHCR yet. Downloading static FFmpeg directly from GitHub CDN..."
+            curl -sL https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe'
+            chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+          fi
+          if ! command -v aria2c >/dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2
+          fi
+          echo "[*] Tools ready: ffmpeg=$(ffmpeg -version | head -n1), aria2c=$(aria2c -v | head -n1)"
+
+      - name: Start Local Telegram Bot API Server (2GB - 4GB File Support)
+        env:
+          TG_API_ID: ${{ secrets.TELEGRAM_API_ID || secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TELEGRAM_API_HASH || secrets.TG_API_HASH }}
+        run: |
+          if [ -n "$TG_API_ID" ] && [ -n "$TG_API_HASH" ]; then
+            echo "[*] Launching Local Telegram Bot API server container..."
+            mkdir -p /tmp/tg-bot-api-data
+            docker run -d \
+              --name tg-local-api \
+              -p 8081:8081 \
+              -v /tmp/tg-bot-api-data:/var/lib/telegram-bot-api \
+              -e TELEGRAM_API_ID="${TG_API_ID}" \
+              -e TELEGRAM_API_HASH="${TG_API_HASH}" \
+              aiogram/telegram-bot-api:latest \
+              --local --dir=/var/lib/telegram-bot-api --temp-dir=/tmp
+            
+            for i in {1..30}; do
+              if curl -s http://127.0.0.1:8081 >/dev/null 2>&1; then
+                echo "[SUCCESS] Local Telegram Bot API Server is running on port 8081!"
+                break
+              fi
+              sleep 1
+            done
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install cryptography requests
+
+      - name: Configure Git for Instant Mapping Sync
+        run: |
+          git config --global user.name "Erai Ingestion Runner"
+          git config --global user.email "runner@clixarena.internal"
+
+      - name: Process, Burn Subtitles & Upload
+        env:
+          ABYSS_API_KEYS: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          ABYSS_API_KEY: ${{ secrets.ABYSS_API_KEYS || secrets.ABYSS_API_KEY || secrets.STREAMHG_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.TG_CHANNEL_ID }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.ADMIN_CHAT_ID }}
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+          TG_LOCAL_API_URL: "http://127.0.0.1:8081"
+          ITEM_META_B64: ${{ matrix.item.meta_b64 }}
+        run: |
+          python erai_worker.py
+
+      - name: Stop Local Telegram Bot API Server
+        if: always()
+        run: |
+          docker rm -f tg-local-api 2>/dev/null || true
+
+      - name: Save Result Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: result-${{ matrix.item.key }}
+          path: artifacts/
+          retention-days: 1
+
+  sync:
+    name: Final Mapping Integrity Check
+    needs: upload
+    if: always() && needs.detect.outputs.has_items == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all result artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_results/
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install cryptography requests
+
+      - name: Merge & Verify Encrypted Mapping
+        env:
+          MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
+        run: |
+          python sync_history.py all_results/
