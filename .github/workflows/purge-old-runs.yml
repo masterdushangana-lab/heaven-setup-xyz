@@ -9,12 +9,12 @@ on:
       retain_minutes:
         description: 'Keep finished runs from the last N minutes (0 deletes all finished runs)'
         required: false
-        default: '30'
+        default: '0'
         type: string
       keep_minimum:
-        description: 'Minimum number of recent runs to keep'
+        description: 'Minimum number of recent runs to keep (0 deletes all completed)'
         required: false
-        default: '3'
+        default: '0'
         type: string
 
 concurrency:
@@ -34,8 +34,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RETAIN_MINUTES: ${{ inputs.retain_minutes || '30' }}
-          KEEP_MIN: ${{ inputs.keep_minimum || '3' }}
+          RETAIN_MINUTES: ${{ inputs.retain_minutes || '0' }}
+          KEEP_MIN: ${{ inputs.keep_minimum || '0' }}
         run: |
           python3 -c "
           import urllib.request
@@ -46,8 +46,8 @@ jobs:
 
           repo = os.environ.get('GITHUB_REPOSITORY', 'masterdushangana-lab/heaven-setup-xyz')
           token = os.environ.get('GH_TOKEN')
-          retain_minutes = float(os.environ.get('RETAIN_MINUTES', '30'))
-          keep_min = int(os.environ.get('KEEP_MIN', '3'))
+          retain_minutes = float(os.environ.get('RETAIN_MINUTES', '0'))
+          keep_min = int(os.environ.get('KEEP_MIN', '0'))
 
           headers = {
               'Authorization': f'Bearer {token}',
@@ -56,7 +56,7 @@ jobs:
           }
 
           cutoff = datetime.now(timezone.utc) - timedelta(minutes=retain_minutes)
-          print(f'[*] Purging finished workflow runs older than {retain_minutes} mins (Cutoff: {cutoff.isoformat()})...')
+          print(f'[*] Purging finished workflow runs (retain_minutes={retain_minutes}, keep_min={keep_min})...')
 
           deleted_count = 0
           for page in range(1, 15):
@@ -69,13 +69,15 @@ jobs:
                       if not runs:
                           break
 
-                      # Keep the newest keep_min runs overall
-                      if page == 1 and len(runs) > keep_min:
-                          eligible = runs[keep_min:]
-                      elif page > 1:
-                          eligible = runs
+                      if keep_min > 0:
+                          if page == 1 and len(runs) > keep_min:
+                              eligible = runs[keep_min:]
+                          elif page > 1:
+                              eligible = runs
+                          else:
+                              eligible = []
                       else:
-                          eligible = []
+                          eligible = runs
 
                       for r in eligible:
                           rid = r['id']
@@ -83,6 +85,7 @@ jobs:
                           created_at_str = r.get('created_at')
 
                           # Only delete completed runs (success, failure, cancelled, skipped)
+                          # Never touch in_progress or queued runs
                           if status == 'completed':
                               dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
                               if dt < cutoff or retain_minutes == 0:
@@ -92,13 +95,13 @@ jobs:
                                       with urllib.request.urlopen(d_req, timeout=10) as d_resp:
                                           if d_resp.status in (204, 200):
                                               deleted_count += 1
-                                              print(f'  [-] Deleted old run {rid} ({r.get(\"name\")}) from {created_at_str}')
+                                              print(f'  [-] Deleted completed run {rid} ({r.get(\"name\")})')
                                   except Exception as e_del:
                                       print(f'  [!] Failed to delete run {rid}: {e_del}')
-                                  time.sleep(0.1)
+                                  time.sleep(0.08)
               except Exception as e_page:
                   print(f'[!] Error fetching page {page}: {e_page}')
                   break
 
-          print(f'[SUCCESS] Cleaned up {deleted_count} old workflow runs & logs successfully!')
+          print(f'[SUCCESS] Cleaned up {deleted_count} completed workflow runs & logs successfully!')
           "
