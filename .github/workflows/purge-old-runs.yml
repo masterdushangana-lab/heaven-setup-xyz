@@ -2,20 +2,24 @@ name: Purge Old Workflow Runs & Clean Logs
 
 on:
   schedule:
-    # Automatically clean old runs every midnight (00:00 UTC)
-    - cron: '0 0 * * *'
+    # Automatically clean old completed runs every 10 minutes continuously
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
-      retain_days:
-        description: 'Keep runs from the last N days (0 deletes all finished runs)'
+      retain_minutes:
+        description: 'Keep finished runs from the last N minutes (0 deletes all finished runs)'
         required: false
-        default: '1'
+        default: '30'
         type: string
       keep_minimum:
         description: 'Minimum number of recent runs to keep'
         required: false
-        default: '5'
+        default: '3'
         type: string
+
+concurrency:
+  group: purge-old-runs-pipeline
+  cancel-in-progress: true
 
 permissions:
   actions: write
@@ -30,8 +34,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RETAIN_DAYS: ${{ inputs.retain_days || '1' }}
-          KEEP_MIN: ${{ inputs.keep_minimum || '5' }}
+          RETAIN_MINUTES: ${{ inputs.retain_minutes || '30' }}
+          KEEP_MIN: ${{ inputs.keep_minimum || '3' }}
         run: |
           python3 -c "
           import urllib.request
@@ -42,8 +46,8 @@ jobs:
 
           repo = os.environ.get('GITHUB_REPOSITORY', 'masterdushangana-lab/heaven-setup-xyz')
           token = os.environ.get('GH_TOKEN')
-          retain_days = float(os.environ.get('RETAIN_DAYS', '1'))
-          keep_min = int(os.environ.get('KEEP_MIN', '5'))
+          retain_minutes = float(os.environ.get('RETAIN_MINUTES', '30'))
+          keep_min = int(os.environ.get('KEEP_MIN', '3'))
 
           headers = {
               'Authorization': f'Bearer {token}',
@@ -51,11 +55,11 @@ jobs:
               'User-Agent': 'Actions-Purge-Engine'
           }
 
-          cutoff = datetime.now(timezone.utc) - timedelta(days=retain_days)
-          print(f'[*] Purging workflow runs older than {retain_days} days (Cutoff: {cutoff.isoformat()})...')
+          cutoff = datetime.now(timezone.utc) - timedelta(minutes=retain_minutes)
+          print(f'[*] Purging finished workflow runs older than {retain_minutes} mins (Cutoff: {cutoff.isoformat()})...')
 
           deleted_count = 0
-          for page in range(1, 10):
+          for page in range(1, 15):
               url = f'https://api.github.com/repos/{repo}/actions/runs?per_page=100&page={page}'
               req = urllib.request.Request(url, headers=headers)
               try:
@@ -76,13 +80,12 @@ jobs:
                       for r in eligible:
                           rid = r['id']
                           status = r.get('status')
-                          conclusion = r.get('conclusion')
                           created_at_str = r.get('created_at')
 
                           # Only delete completed runs (success, failure, cancelled, skipped)
                           if status == 'completed':
                               dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                              if dt < cutoff or retain_days == 0:
+                              if dt < cutoff or retain_minutes == 0:
                                   del_url = f'https://api.github.com/repos/{repo}/actions/runs/{rid}'
                                   d_req = urllib.request.Request(del_url, headers=headers, method='DELETE')
                                   try:
