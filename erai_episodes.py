@@ -178,7 +178,7 @@ def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
     client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
-    limit = int(os.getenv("MAX_EPISODES", "25").strip() or "25")
+    limit = int(os.getenv("MAX_EPISODES", "75").strip() or "75")
 
     print("==================================================================")
     print("      ERAI-RAWS MATRIX DETECTOR: 1080P SIMULCAST INGESTION        ")
