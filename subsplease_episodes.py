@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional, Set, Tuple
 
 from mapping_crypto import decrypt_mapping
-from mal_resolver import resolve_mal_metadata
+from mal_resolver import resolve_mal_metadata, normalize_title
 from detect_episodes import is_already_uploaded, is_episode_blacklisted, load_history
 
 SUBSPLEASE_LATEST_API = "https://subsplease.org/api/?f=latest&tz=UTC"
