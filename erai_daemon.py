@@ -147,39 +147,37 @@ def run_sentinel(poll_interval: int = 10, max_runtime_seconds: int = 18000):
                 show = it["show"]
                 ep = it["episode"]
 
-                if (show, ep) in seen_in_session:
-                    continue
-
                 # Quick local check against mapping
                 mal_info = resolve_mal_metadata(show, client_id=client_id)
                 mal_id = mal_info.get("mal_id")
                 official_title = mal_info.get("title_english") or mal_info.get("title") or show
 
                 if is_episode_blacklisted(deleted, "", mal_id, official_title, ep):
-                    seen_in_session.add((show, ep))
                     continue
 
                 if is_already_uploaded(history, "", mal_id, official_title, ep, upload_target="both") or \
                    is_already_uploaded(history, "", mal_id, show, ep, upload_target="both"):
-                    seen_in_session.add((show, ep))
                     continue
 
-                # NEW EPISODE CONFIRMED!
-                print(f"[!] 🔥 REAL-TIME DETECTION: {official_title} - Ep {ep} (MAL ID: {mal_id})")
+                # Un-uploaded episode confirmed!
+                # If seen before, re-queue if not uploaded to heal failed/cancelled runs
+                if (show, ep) not in seen_in_session:
+                    print(f"[!] 🔥 REAL-TIME DETECTION: {official_title} - Ep {ep} (MAL ID: {mal_id})")
                 new_detected.append((show, ep))
-                seen_in_session.add((show, ep))
 
             if new_detected:
                 now = time.time()
                 if now - last_trigger_time >= COOLDOWN_SECONDS:
-                    print(f"[*] Found {len(new_detected)} new releases! Firing Erai Matrix Parallel Pipeline...")
+                    print(f"[*] Found {len(new_detected)} un-uploaded releases! Firing Erai Matrix Parallel Pipeline...")
                     if token:
+                        for s_ep in new_detected:
+                            seen_in_session.add(s_ep)
                         trigger_matrix_pipeline(repo, token, len(new_detected))
                         last_trigger_time = now
                     else:
                         print("[!] GITHUB_TOKEN missing, cannot trigger matrix automatically.", file=sys.stderr)
                 else:
-                    print(f"[*] New episodes detected, waiting for cooldown ({int(COOLDOWN_SECONDS - (now - last_trigger_time))}s remaining)...")
+                    print(f"[*] Un-uploaded episodes detected ({len(new_detected)}), waiting for cooldown ({int(COOLDOWN_SECONDS - (now - last_trigger_time))}s remaining)...")
 
         except Exception as err:
             print(f"[!] Sentinel tick error: {err}", file=sys.stderr)
