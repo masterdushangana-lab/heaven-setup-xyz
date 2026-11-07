@@ -186,11 +186,69 @@ def fetch_latest_erairaws() -> List[Dict[str, Any]]:
     return items
 
 
+def fetch_in_progress_tasks(repo: str, token: str, current_run_id: str = "") -> Set[Tuple[str, str]]:
+    """
+    Queries GitHub Actions API to find episodes currently being processed in OTHER active workflow runs.
+    Returns a set of (title_lowercase, normalized_ep) so newly triggered runs never duplicate work.
+    """
+    in_flight = set()
+    if not repo or not token:
+        return in_flight
+
+    try:
+        url_runs = f"https://api.github.com/repos/{repo}/actions/workflows/erai-auto.yml/runs?status=in_progress"
+        req = urllib.request.Request(
+            url_runs,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "Erai-Active-Job-Detector"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            runs_data = json.loads(resp.read().decode("utf-8"))
+            runs = runs_data.get("workflow_runs", [])
+
+        for r in runs:
+            r_id = str(r.get("id", ""))
+            # Skip checking the current run itself
+            if current_run_id and r_id == str(current_run_id):
+                continue
+
+            url_jobs = f"https://api.github.com/repos/{repo}/actions/runs/{r_id}/jobs?per_page=100"
+            req_j = urllib.request.Request(
+                url_jobs,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "Erai-Active-Job-Detector"
+                }
+            )
+            with urllib.request.urlopen(req_j, timeout=10) as resp_j:
+                jobs_data = json.loads(resp_j.read().decode("utf-8"))
+                for j in jobs_data.get("jobs", []):
+                    j_name = j.get("name", "")
+                    # Match pattern like: Parallel Ingest ([Erai-raws] Title - Ep 05)
+                    m = re.search(r"\[Erai-raws\]\s*(.*?)\s*-\s*Ep(?:isode)?\s*(\d+(?:\.\d+)?)", j_name, re.IGNORECASE)
+                    if m:
+                        t = normalize_title(m.group(1).strip())
+                        e = normalize_episode(m.group(2).strip())
+                        in_flight.add((t, e))
+                        print(f"  [*] Live In-Flight Job Detected: '{m.group(1).strip()}' - Ep {m.group(2).strip()} (Run ID: {r_id})")
+    except Exception as e:
+        print(f"  [!] Notice during active job check: {e}")
+
+    return in_flight
+
+
 def main():
     password = os.getenv("MAPPING_PASSWORD", "").strip()
     client_id = os.getenv("MAL_CLIENT_ID", "").strip()
     upload_target = os.getenv("UPLOAD_TARGET", "both").lower().strip()
     limit = int(os.getenv("MAX_EPISODES", "20").strip() or "20")
+    gh_token = os.getenv("GITHUB_TOKEN", "").strip()
+    gh_repo = os.getenv("GITHUB_REPOSITORY", "").strip() or "masterdushangana-lab/heaven-setup-xyz"
+    current_run_id = os.getenv("CURRENT_RUN_ID", "").strip()
 
     print("==================================================================")
     print("      ERAI-RAWS MATRIX DETECTOR: 1080P SIMULCAST INGESTION        ")
@@ -198,6 +256,11 @@ def main():
 
     history = load_history(password) if password else {}
     deleted_records = history.get("__deleted__", {}) if history else {}
+
+    # Live In-Flight Check: Prevent duplicate queuing when multiple workflow runs trigger concurrently!
+    in_flight_tasks = fetch_in_progress_tasks(gh_repo, gh_token, current_run_id) if gh_token else set()
+    if in_flight_tasks:
+        print(f"[*] Found {len(in_flight_tasks)} episodes actively encoding/uploading in concurrent runs. Deduplication active.")
 
     pending_tasks = []
     queued_keys = set()
@@ -262,6 +325,13 @@ def main():
         if is_already_uploaded(history, "", mal_id, official_title, ep_num, upload_target=upload_target) or \
            is_already_uploaded(history, "", mal_id, show_name, ep_num, upload_target=upload_target):
             print(f"[-] Skipping duplicate release: {official_title} - Ep {ep_num} (already in library)")
+            continue
+
+        # Concurrent in-flight check: Skip if another active workflow run is already processing it
+        norm_ep_check = normalize_episode(ep_num)
+        if (normalize_title(official_title), norm_ep_check) in in_flight_tasks or \
+           (normalize_title(show_name), norm_ep_check) in in_flight_tasks:
+            print(f"[-] Skipping active release: {official_title} - Ep {ep_num} (currently processing in concurrent workflow run)")
             continue
 
         if is_queued(mal_id, official_title, ep_num) or is_queued(mal_id, show_name, ep_num):

@@ -21,8 +21,9 @@ on:
           - abyss
           - telegram
 
+# Flexible concurrency: Allows multiple runs so brand new episodes don't queue or block behind long runs
 concurrency:
-  group: erai-matrix-auto-ingestion-pipeline
+  group: erai-matrix-auto-ingestion-${{ github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -58,6 +59,9 @@ jobs:
       - name: Detect New Erai-raws Releases
         id: detect_step
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
           MAPPING_PASSWORD: ${{ secrets.MAPPING_PASSWORD }}
           MAL_CLIENT_ID: ${{ secrets.MAL_CLIENT_ID }}
           MAX_EPISODES: ${{ inputs.max_episodes || '20' }}
@@ -66,7 +70,7 @@ jobs:
           python erai_episodes.py
 
   upload:
-    name: Parallel Ingest
+    name: Parallel Ingest (${{ matrix.item.display }})
     needs: detect
     if: needs.detect.outputs.has_items == 'true'
     runs-on: ubuntu-latest
